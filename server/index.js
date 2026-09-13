@@ -193,30 +193,7 @@ let dbReady = false;
     paymentMethod: { provider: '', number: '', name: '' },
     createdAt: new Date()
   });
-  // Also add demo user
-  const demoHash = bcrypt.hashSync('demo123', 10);
-  memStore.users.push({
-    _id: String(memStore.nextId.user++),
-    email: 'demo@filmz.com',
-    passwordHash: demoHash,
-    name: 'Demo User',
-    username: 'demo_user',
-    phone: '',
-    location: '',
-    bio: '',
-    avatar: null,
-    role: 'user',
-    active: true,
-    resetToken: null,
-    resetTokenExpiry: null,
-    notificationsEnabled: true,
-    subscriptionTier: 'free',
-    subscriptionExpiry: null,
-    trialEndsAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-    paymentMethod: { provider: '', number: '', name: '' },
-    createdAt: new Date()
-  });
-  console.log('In-memory users seeded (admin + demo)');
+  console.log('In-memory users seeded (admin)');
 })();
 
 mongoose.connect(MONGODB_URI, {

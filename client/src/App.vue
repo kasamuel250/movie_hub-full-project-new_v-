@@ -658,8 +658,6 @@
               </button>
             </form>
             <p class="forgot-password"><button type="button" class="forgot-link" @click="setPage('forgot')">Forgot Password?</button></p>
-            <p class="demo-info">Demo: <span class="demo-link" @click="loginEmail='demo@filmz.com'; loginPassword='demo123'">demo@filmz.com / demo123</span></p>
-            <p class="admin-info">Admin: <span class="demo-link" @click="loginEmail='ka__samuel250'; loginPassword='tetaornella@250'">ka__samuel250 / tetaornella@250</span></p>
           </div>
 
           <div v-else class="auth-forms">
@@ -2956,7 +2954,7 @@ const handleLogin = async () => {
     resetHome();
     showToast('Welcome back to the galaxy!');
   } catch (error) {
-    loginError.value = error.response?.data?.error || error.response?.data?.message || 'Login failed. Try demo@filmz.com / demo123 or kasamuel71@gmail.com / tetaornella@250';
+    loginError.value = error.response?.data?.error || error.response?.data?.message || 'Login failed. Please check your credentials.';
   } finally {
     loginLoading.value = false;
   }
