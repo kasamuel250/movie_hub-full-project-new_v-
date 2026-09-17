@@ -1,5 +1,5 @@
 <template>
-  <div id="app" class="app-container">
+  <div id="app" class="app-container" :class="{ 'admin-page-active': currentPageName === 'admin' }">
     <div class="space-bg">
       <div v-for="(style, n) in starStyles" :key="'star' + n" class="star" :style="style"></div>
       <div v-for="(style, n) in cometStyles" :key="'comet' + n" class="shooting-star" :style="style"></div>
@@ -20,13 +20,23 @@
           <h1 class="chameleon-name">Ka_samuel@250 <span>Filmz</span></h1>
         </div>
         <nav class="nav-pills">
-          <button class="pill" :class="{ active: currentPageName === 'home' }" @click="resetHome"><Icon name="home" size="16" /> {{ t('home') }}</button>
-          <button class="pill" :class="{ active: currentPageName === 'youtmus' }" @click="openYoutmus"><Icon name="music" size="16" /> YOUTMUS</button>
-          <button v-if="isAuthenticated" class="pill" @click="setPage('profile')"><Icon name="user" size="16" /> {{ t('profile') }}</button>
-          <button v-if="isAuthenticated" class="pill" @click="setPage('watchlists')"><Icon name="list" size="16" /> {{ t('lists') }}</button>
-          <button v-if="isAdmin" class="pill" @click="setPage('admin')"><Icon name="shield" size="16" /> {{ t('admin') }}</button>
+          <template v-if="currentPageName !== 'admin'">
+            <button class="pill" :class="{ active: currentPageName === 'home' }" @click="resetHome"><Icon name="home" size="16" /> {{ t('home') }}</button>
+            <button class="pill" :class="{ active: currentPageName === 'youtmus' }" @click="openYoutmus"><Icon name="music" size="16" /> YOUTMUS</button>
+            <button v-if="isAuthenticated" class="pill" @click="setPage('profile')"><Icon name="user" size="16" /> {{ t('profile') }}</button>
+            <button v-if="isAuthenticated" class="pill" @click="setPage('watchlists')"><Icon name="list" size="16" /> {{ t('lists') }}</button>
+            <button v-if="isAdmin" class="pill" @click="setPage('admin')"><Icon name="shield" size="16" /> {{ t('admin') }}</button>
+          </template>
+          <template v-else>
+            <div class="admin-mode-bar">
+              <span class="adm-live"><span class="live-dot"></span> ADMIN</span>
+              <span class="adm-title"><Icon name="shield" size="15" /> Command Center</span>
+              <span class="adm-user"><Icon name="user" size="13" /> {{ user?.name || user?.username || 'Administrator' }}</span>
+              <button class="adm-exit" @click="resetHome"><Icon name="arrowLeft" size="13" /> Back to site</button>
+            </div>
+          </template>
 
-          <div class="notif-wrap">
+          <div v-if="currentPageName !== 'admin'" class="notif-wrap">
             <button class="pill notif-bell" :class="{ active: notifsOpen }" @click="toggleNotifs">
               <Icon name="bell" size="16" />
               <span v-if="unreadCount > 0" class="notif-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
@@ -62,7 +72,7 @@
           </div>
 
           <!-- Animated 3-dots menu -->
-          <div class="dots-menu-wrap">
+          <div v-if="currentPageName !== 'admin'" class="dots-menu-wrap">
             <button
               class="dots-btn"
               :class="{ open: menuOpen }"
@@ -176,6 +186,17 @@
       </section>
 
       <section v-if="currentPageName === 'home' && !trailerUrl && !fullMovieUrl" class="hero-section">
+        <div class="hero-fx" aria-hidden="true">
+          <span class="fx-orb fx-orb-1"></span>
+          <span class="fx-orb fx-orb-2"></span>
+          <span class="fx-orb fx-orb-3"></span>
+          <span class="fx-float fx-float-1">🎬</span>
+          <span class="fx-float fx-float-2">✨</span>
+          <span class="fx-float fx-float-3">🍿</span>
+          <span class="fx-float fx-float-4">🌟</span>
+          <span class="fx-float fx-float-5">🎞️</span>
+          <span class="fx-float fx-float-6">🎥</span>
+        </div>
         <div v-if="heroMovies.length" class="hero-banner" @mouseenter="pauseHero" @mouseleave="resumeHero">
           <div class="banner-stage">
             <Transition name="banner-fade" mode="out-in">
@@ -420,13 +441,24 @@
         </div>
         <div class="video-stage">
           <div class="video-wrapper">
+            <div v-if="!playerLoaded" class="player-loader">
+              <Icon name="loader" size="26" spin />
+              <span>Loading stream…</span>
+            </div>
             <iframe
               :src="fullMovieUrl || trailerUrl"
+              :title="currentMovieTitle + ' player'"
               frameborder="0"
-              allow="autoplay; fullscreen; picture-in-picture"
+              allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+              allowfullscreen
+              scrolling="no"
+              referrerpolicy="origin"
               class="trailer-iframe"
+              @load="onPlayerLoaded"
+              @error="handlePlayerError"
             ></iframe>
           </div>
+          <p v-if="fullMovieUrl" class="player-hint"><Icon name="info" size="12" /> Free sources can be busy — if the video stays black, tap the next <strong>SOURCE</strong> pill and it will switch automatically.</p>
         </div>
 
         <div class="comment-section">
@@ -523,8 +555,10 @@
           </div>
         </div>
 
-        <div v-if="ytError" class="youtmus-error" @click="ytError = null">
-          <Icon name="info" size="15" /> {{ ytError }}
+        <div v-if="ytError" class="youtmus-error">
+          <Icon name="info" size="15" /> <span>{{ ytError }}</span>
+          <button class="yt-error-retry" @click="retryYoutmus"><Icon name="refresh" size="13" /> Try again</button>
+          <button class="yt-error-dismiss" @click="ytError = null" title="Dismiss"><Icon name="x" size="13" /></button>
         </div>
 
         <div v-if="isAuthenticated" class="yt-pl-section">
@@ -563,7 +597,8 @@
         </div>
 
         <div v-if="ytLoading && !ytPlaying" class="youtmus-loading">
-          <Icon name="loader" size="22" spin /> Loading music…
+          <span class="yt-load-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+          Loading music…
         </div>
 
         <div class="youtmus-results">
@@ -579,10 +614,11 @@
 
           <div v-else class="youtmus-grid">
             <button
-              v-for="item in youtmusItems"
+              v-for="(item, index) in youtmusItems"
               :key="item.id"
               class="yt-card"
               :class="{ playing: ytPlaying?.id === item.id }"
+              :style="{ animationDelay: (index * 55) + 'ms' }"
               @click="playYoutmus(item, youtmusLabel)"
             >
               <div class="yt-thumb">
@@ -1141,26 +1177,50 @@
             </div>
           </div>
 
+          <div class="pay-fields" v-if="momoProvider === 'manual'">
+            <div class="input-group">
+              <label>Sender's Mobile Money number</label>
+              <input v-model="momoNumber" type="tel" placeholder="The number you will pay from" class="glow-input" />
+              <div class="input-glow"></div>
+            </div>
+            <div class="input-group">
+              <label>Account name (optional)</label>
+              <input v-model="momoName" type="text" placeholder="Your name" class="glow-input" />
+              <div class="input-glow"></div>
+            </div>
+            <div class="input-group">
+              <label>Transaction / reference ID (optional)</label>
+              <input v-model="manualTxRef" type="text" placeholder="e.g. the MoMo reference you received" class="glow-input" />
+              <div class="input-glow"></div>
+            </div>
+            <div class="input-group">
+              <label>Note (optional)</label>
+              <input v-model="manualTxMsg" type="text" placeholder="Anything that helps us confirm your payment" class="glow-input" />
+              <div class="input-glow"></div>
+            </div>
+          </div>
+
           <div class="pay-summary">
             <span>Plan: <strong>{{ selectedPlan === 'yearly' ? 'Yearly (12 months)' : 'Monthly (1 month)' }}</strong></span>
             <span>Amount: <strong>{{ selectedPlan === 'yearly' ? planYearlyPrice : planMonthlyPrice }} {{ subscriptionStatus.currency }}</strong></span>
             <span>Pay to: <strong>{{ subscriptionStatus.payee?.name }} — {{ subscriptionStatus.payee?.msisdn }}</strong></span>
+            <span v-if="momoProvider === 'manual'" class="pay-manual-hint"><Icon name="info" size="12" /> Send the money to the number above, then submit this proof. We activate your premium as soon as the admin confirms your payment.</span>
           </div>
 
-          <button class="pay-btn" :disabled="subLoading" @click="checkout()">
+          <button class="pay-btn" :disabled="subLoading" @click="momoProvider === 'manual' ? submitManualPayment() : checkout()">
             <Icon v-if="subLoading" name="loader" size="16" spin />
-            <Icon v-else name="lock" size="16" />
-            {{ subLoading ? 'Sending payment request…' : (selectedPlan === 'yearly' ? `PAY ${planYearlyPrice} ${subscriptionStatus.currency} YEARLY` : `PAY ${planMonthlyPrice} ${subscriptionStatus.currency} MONTHLY`) }}
+            <Icon v-else :name="momoProvider === 'manual' ? 'send' : 'lock'" size="16" />
+            {{ subLoading ? (momoProvider === 'manual' ? 'Submitting proof…' : 'Sending payment request…') : (momoProvider === 'manual' ? 'SUBMIT MANUAL PAYMENT PROOF' : (selectedPlan === 'yearly' ? `PAY ${planYearlyPrice} ${subscriptionStatus.currency} YEARLY` : `PAY ${planMonthlyPrice} ${subscriptionStatus.currency} MONTHLY`)) }}
           </button>
 
           <div v-if="premiumSteps > 0" class="pay-status">
-            <div class="pay-step" :class="{ done: premiumSteps > 0 }"><span class="pay-step-n">1</span> Payment request sent</div>
-            <div class="pay-step" :class="{ done: premiumSteps > 1 }"><span class="pay-step-n">2</span> Confirm on your phone (MoMo prompt)</div>
+            <div class="pay-step" :class="{ done: premiumSteps > 0 }"><span class="pay-step-n">1</span> {{ momoProvider === 'manual' ? 'Payment proof submitted' : 'Payment request sent' }}</div>
+            <div class="pay-step" :class="{ done: premiumSteps > 1 }"><span class="pay-step-n">2</span> {{ momoProvider === 'manual' ? 'Admin checks your payment' : 'Confirm on your phone (MoMo prompt)' }}</div>
             <div class="pay-step" :class="{ done: premiumSteps > 2 }"><span class="pay-step-n">3</span> Premium activated — enjoy!</div>
             <p v-if="subMessage" class="sub-message" :class="{ ok: subOk }">{{ subMessage }}</p>
           </div>
 
-          <p class="momo-note"><Icon name="info" size="12" /> {{ subscriptionStatus.momoConfigured ? 'A payment prompt will be sent to your number. Approve it on your phone and we auto-activate.' : 'Gateway is being configured — save your number above and you are ready, or pay directly to the number shown.' }}</p>
+          <p class="momo-note"><Icon name="info" size="12" /> {{ momoProvider === 'manual' ? 'We never auto-activate manual payments — the admin verifies each one and grants your premium, then you get a notification in your alerts.' : (subscriptionStatus.momoConfigured ? 'A payment prompt will be sent to your number. Approve it on your phone and we auto-activate.' : 'Gateway is being configured — save your number above and you are ready, or switch to "Pay manually".') }}</p>
         </div>
 
         <button class="back-btn" @click="resetHome"><Icon name="arrowLeft" size="15" /> BACK TO THEATER</button>
@@ -1168,21 +1228,63 @@
 
       <!-- Admin Panel -->
       <div v-if="currentPageName === 'admin'" class="admin-panel">
-        <div class="admin-hero">
-          <h2><Icon name="shield" size="20" /> Admin Control Center</h2>
-          <p>Full control of users, site settings, the footer, subscriptions, alerts and content.</p>
+        <div class="admin-console-strip">
+          <span class="admin-console-chip"><span class="live-dot"></span> ADMIN MODE ACTIVE</span>
+          <span class="admin-console-name"><Icon name="shield" size="13" /> {{ user?.name || user?.username || 'Administrator' }}</span>
+          <span v-if="adminLastUpdated" class="admin-console-time"><Icon name="clock" size="12" /> Last sync {{ adminLastUpdated }}</span>
+          <button class="admin-console-dark" :class="{ on: adminSettings.forceDarkMode }" @click="toggleSiteDarkQuick" :title="adminSettings.forceDarkMode ? 'Turn site-wide dark mode OFF' : 'Turn site-wide dark mode ON'">
+            <Icon :name="adminSettings.forceDarkMode ? 'moon' : 'sun'" size="13" />
+            {{ adminSettings.forceDarkMode ? 'Dark ON' : 'Dark OFF' }} <em>site-wide</em>
+          </button>
+          <button class="admin-console-exit" @click="resetHome"><Icon name="arrowLeft" size="13" /> Back to site</button>
         </div>
+        <div class="admin-layout">
+          <aside class="admin-sidebar">
+            <div class="admin-brand">
+              <span class="admin-brand-icon"><Icon name="shield" size="18" /></span>
+              <div>
+                <strong>Admin Console</strong>
+                <small>Site control center</small>
+              </div>
+            </div>
 
-        <div class="admin-tabs">
-          <button class="admin-tab" :class="{ active: adminTab === 'overview' }" @click="adminTab = 'overview'"><Icon name="grid" size="15" /> Overview</button>
-          <button class="admin-tab" :class="{ active: adminTab === 'users' }" @click="adminTab = 'users'"><Icon name="users" size="15" /> Users</button>
-          <button class="admin-tab" :class="{ active: adminTab === 'settings' }" @click="adminTab = 'settings'"><Icon name="sliders" size="15" /> Site &amp; Footer</button>
-          <button class="admin-tab" :class="{ active: adminTab === 'themes' }" @click="adminTab = 'themes'"><Icon name="layers" size="15" /> Themes</button>
-          <button class="admin-tab" :class="{ active: adminTab === 'notifications' }" @click="adminTab = 'notifications'"><Icon name="bell" size="15" /> Broadcast</button>
-          <button class="admin-tab" :class="{ active: adminTab === 'comments' }" @click="adminTab = 'comments'"><Icon name="message" size="15" /> Comments</button>
-          <button class="admin-tab" :class="{ active: adminTab === 'analytics' }" @click="adminTab = 'analytics'"><Icon name="trendingUp" size="15" /> Analytics</button>
-          <button class="admin-tab" :class="{ active: adminTab === 'support' }" @click="adminTab = 'support'"><Icon name="mail" size="15" /> Support <span v-if="adminStats.openSupportRequests" class="admin-badge">{{ adminStats.openSupportRequests }}</span></button>
-        </div>
+            <nav class="admin-nav">
+              <span class="admin-nav-label">Manage</span>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'overview' }" @click="adminTab = 'overview'"><Icon name="grid" size="16" /> <span>Overview</span></button>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'users' }" @click="adminTab = 'users'"><Icon name="users" size="16" /> <span>Users</span><em class="nav-count">{{ adminUsers.length }}</em></button>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'payments' }" @click="adminTab = 'payments'; loadAdminPayments()"><Icon name="bag" size="16" /> <span>Payments</span><em v-if="paymentStats.pending" class="nav-count warn">{{ paymentStats.pending }}</em></button>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'themes' }" @click="adminTab = 'themes'"><Icon name="layers" size="16" /> <span>Themes</span></button>
+
+              <span class="admin-nav-label">Content</span>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'settings' }" @click="adminTab = 'settings'"><Icon name="sliders" size="16" /> <span>Site &amp; Footer</span></button>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'notifications' }" @click="adminTab = 'notifications'"><Icon name="bell" size="16" /> <span>Broadcast</span></button>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'comments' }" @click="adminTab = 'comments'"><Icon name="message" size="16" /> <span>Comments</span></button>
+
+              <span class="admin-nav-label">Insights</span>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'analytics' }" @click="adminTab = 'analytics'"><Icon name="trendingUp" size="16" /> <span>Analytics</span></button>
+              <button class="admin-nav-item" :class="{ active: adminTab === 'support' }" @click="adminTab = 'support'"><Icon name="mail" size="16" /> <span>Support</span><em v-if="adminStats.openSupportRequests" class="nav-count warn">{{ adminStats.openSupportRequests }}</em></button>
+            </nav>
+
+            <div class="admin-sidebar-foot">
+              <div class="admin-session">
+                <div class="admin-avatar mini"><Icon name="user" size="12" /></div>
+                <div>
+                  <strong>{{ user?.name || user?.username || 'Admin' }}</strong>
+                  <small>Signed in as administrator</small>
+                </div>
+              </div>
+              <button class="admin-sidebar-exit" @click="resetHome"><Icon name="arrowLeft" size="14" /> Back to site</button>
+            </div>
+          </aside>
+
+          <main class="admin-content">
+            <header class="admin-content-head">
+              <div>
+                <h2><Icon :name="adminTabIcons[adminTab] || 'grid'" size="18" /> {{ adminTabTitle }}</h2>
+                <p>{{ adminTabSubtitle }}</p>
+              </div>
+              <button class="btn-download-blue" @click="loadAdminDashboard"><Icon name="refresh" size="14" /> Refresh</button>
+            </header>
 
         <!-- OVERVIEW -->
         <div v-if="adminTab === 'overview'" class="admin-tab-panel">
@@ -1252,40 +1354,109 @@
         <!-- USERS -->
         <div v-if="adminTab === 'users'" class="admin-tab-panel">
           <div class="admin-toolbar">
+            <div class="admin-toolbar-title"><Icon name="users" size="15" /> {{ filteredAdminUsers.length }} account{{ filteredAdminUsers.length === 1 ? '' : 's' }} — click any card to view &amp; manage</div>
             <div class="input-group"><input v-model="adminUserFilter" type="text" placeholder="Search users by name, email or username..." class="glow-input" /><div class="input-glow"></div></div>
-            <button class="btn-download-blue" @click="loadAdminDashboard"><Icon name="refresh" size="14" /> Refresh</button>
           </div>
-          <div v-if="filteredAdminUsers.length" class="admin-user-list">
-            <div v-for="u in filteredAdminUsers" :key="u.id" class="admin-user-card">
-              <div class="admin-user-main">
+          <div v-if="filteredAdminUsers.length" class="admin-user-grid">
+            <div
+              v-for="u in filteredAdminUsers"
+              :key="u.id"
+              class="admin-user-card"
+              :class="{ 'is-admin': isAdminUserRow(u) }"
+              @click="openAdminUser(u)"
+            >
+              <div class="admin-user-avatar-wrap">
                 <img v-if="u.avatar" :src="u.avatar" alt="" class="admin-avatar" />
-                <div v-else class="admin-avatar"><Icon name="user" size="14" /></div>
-                <div class="admin-user-meta">
-                  <strong>{{ u.name || u.username || u.email }}</strong>
-                  <span>{{ u.email }}</span>
-                  <span v-if="u.username" class="admin-meta">@{{ u.username }}</span>
-                  <span v-if="u.phone" class="admin-meta"><Icon name="smartphone" size="11" /> {{ u.phone }}</span>
-                  <span v-if="u.location" class="admin-meta"><Icon name="mapPin" size="11" /> {{ u.location }}</span>
-                  <span class="admin-meta"><Icon name="heart" size="11" /> {{ u.favoriteCount || 0 }} likes</span>
-                  <span class="admin-date">joined {{ formatDate(u.createdAt) }}</span>
-                </div>
+                <div v-else class="admin-avatar"><Icon name="user" size="16" /></div>
+                <span v-if="u.fromFallback" class="admin-fallback-tag" title="Created while the database was offline — kept in the persistent store"><Icon name="database" size="10" /> fallback</span>
+              </div>
+              <div class="admin-user-meta">
+                <strong>{{ u.name || u.username || u.email }}</strong>
+                <span class="admin-user-email">{{ u.email }}</span>
+                <span class="admin-user-extra"><Icon name="smartphone" size="11" /> {{ u.phone || 'no phone' }}</span>
+                <span class="admin-user-extra"><Icon name="mapPin" size="11" /> {{ u.location || 'No location' }}</span>
               </div>
               <div class="admin-user-badges">
                 <span class="admin-chip" :class="u.role === 'admin' ? 'chip-admin' : 'chip-user'">{{ u.role }}</span>
                 <span class="admin-chip" :class="u.active !== false ? 'chip-on' : 'chip-off'">{{ u.active !== false ? 'active' : 'blocked' }}</span>
-                <span class="admin-chip" :class="u.lifetimeFree ? 'chip-lifetime' : (u.subscriptionTier === 'premium' ? 'chip-premium' : 'chip-trial')">{{ u.lifetimeFree ? 'lifetime free' : (u.subscriptionTier === 'premium' ? 'premium' : 'free / trial') }}</span>
               </div>
-              <div class="admin-user-actions">
-                <button class="admin-action" :class="{ danger: u.active !== false }" @click="toggleUserActive(u)"><Icon name="lock" size="12" /> {{ u.active !== false ? 'Block' : 'Unblock' }}</button>
-                <button class="admin-action" :class="{ lifetime: u.lifetimeFree }" @click="toggleLifetimeFree(u)"><Icon name="zap" size="12" /> {{ u.lifetimeFree ? 'Remove Lifetime Free' : 'Free Forever' }}</button>
-                <button class="admin-action" @click="toggleUserPremium(u)"><Icon name="award" size="12" /> {{ u.subscriptionTier === 'premium' ? 'Revoke Premium' : 'Give Premium' }}</button>
-                <button class="admin-action" @click="resetUserTrial(u)" :disabled="isAdminUserRow(u)"><Icon name="refresh" size="12" /> Reset Trial</button>
-                <button v-if="u.role !== 'admin'" class="admin-action" @click="toggleUserAdmin(u)"><Icon name="shield" size="12" /> Make Admin</button>
-                <button class="admin-action danger" @click="deleteAdminUser(u.id)" :disabled="isAdminUserRow(u)"><Icon name="trash" size="12" /> Delete</button>
+              <div class="admin-user-sub">
+                <span v-if="u.lifetimeFree" class="admin-chip chip-lifetime">lifetime free</span>
+                <span v-else-if="u.subscriptionTier === 'premium'" class="admin-chip chip-premium">premium</span>
+                <span v-else class="admin-chip chip-trial">free / trial</span>
+                <span class="admin-chip chip-sub" :class="{ 'chip-off': u.lifetimeFree || u.subscriptionTier !== 'premium' }">{{ u.lifetimeFree ? 'forever' : 'expires ' + (formatDate(u.subscriptionExpiry) || '—') }}</span>
+              </div>
+              <div class="admin-user-foot">
+                <span class="admin-date"><Icon name="calendar" size="11" /> joined {{ formatDate(u.createdAt) }}</span>
+                <span class="admin-open"><Icon name="chevronRight" size="13" /> View</span>
               </div>
             </div>
           </div>
           <div v-else class="admin-empty">No users match your search.</div>
+        </div>
+
+        <!-- PAYMENTS -->
+        <div v-if="adminTab === 'payments'" class="admin-tab-panel">
+          <div class="admin-toolbar">
+            <div class="admin-pay-filters">
+              <button class="admin-filter" :class="{ active: adminPayFilter === '' }" @click="adminPayFilter = ''">All <em>{{ paymentStats.all || 0 }}</em></button>
+              <button class="admin-filter" :class="{ active: adminPayFilter === 'pending' }" @click="adminPayFilter = 'pending'">Pending <em class="warn">{{ paymentStats.pending || 0 }}</em></button>
+              <button class="admin-filter" :class="{ active: adminPayFilter === 'approved' }" @click="adminPayFilter = 'approved'">Approved <em>{{ paymentStats.approved || 0 }}</em></button>
+              <button class="admin-filter" :class="{ active: adminPayFilter === 'rejected' }" @click="adminPayFilter = 'rejected'">Rejected <em>{{ paymentStats.rejected || 0 }}</em></button>
+            </div>
+            <div class="input-group admin-toolbar-search"><input v-model="adminPaySearch" type="text" placeholder="Search by user, MoMo number, amount or ref..." class="glow-input" /><Icon name="search" size="14" class="admin-toolbar-search-ic" /><div class="input-glow"></div></div>
+            <button class="btn-download-blue" @click="loadAdminPayments"><Icon name="refresh" size="14" /> Refresh</button>
+          </div>
+
+          <div class="admin-section admin-grant-box">
+            <h3><Icon name="userPlus" size="15" /> Record a payment &amp; grant premium</h3>
+            <p class="admin-hint">Use this when a user pays you directly (MoMo / WhatsApp) without submitting a proof. Pick the account, choose a plan and save.</p>
+            <div class="admin-grant-form">
+              <label class="admin-field">
+                <span>User</span>
+                <select v-model="grantPayment.userId" class="glow-input">
+                  <option value="">— Select a user —</option>
+                  <option v-for="u in adminUsers" :key="u.id" :value="u.id">{{ u.name || u.username || u.email }}</option>
+                </select>
+              </label>
+              <label class="admin-field"><span>Plan</span><select v-model="grantPayment.plan" class="glow-input"><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>
+              <label class="admin-field"><span>Transaction reference (optional)</span><input v-model="grantPayment.transactionId" class="glow-input" placeholder="e.g. MoMo ref" /></label>
+              <label class="admin-field"><span>Apply immediately</span><label class="admin-check"><input type="checkbox" v-model="grantPayment.approve" /> <span>Grant premium now</span></label></label>
+              <button class="auth-btn primary" :disabled="adminSaving || !grantPayment.userId" @click="createAdminPayment">
+                <Icon v-if="adminSaving" name="loader" size="14" spin /> <Icon v-else name="plus" size="14" /> Record payment
+              </button>
+            </div>
+          </div>
+
+          <div v-if="filteredAdminPayments.length" class="admin-payments">
+            <div v-for="p in filteredAdminPayments" :key="p.id" class="admin-payment" :class="p.status">
+              <div class="admin-payment-head">
+                <div class="admin-payment-user">
+                  <div class="admin-avatar mini"><Icon name="user" size="12" /></div>
+                  <div>
+                    <strong>{{ p.userName }}</strong>
+                    <span>{{ p.email || p.number }}</span>
+                  </div>
+                </div>
+                <span class="admin-chip" :class="p.status === 'approved' ? 'chip-on' : (p.status === 'rejected' ? 'chip-off' : 'chip-premium')">{{ p.status }}</span>
+              </div>
+              <div class="admin-payment-body">
+                <span class="admin-payment-amount">{{ p.amount }} {{ p.currency }} <small>{{ p.plan }}</small></span>
+                <span class="admin-payment-meta"><Icon name="smartphone" size="11" /> {{ p.provider }} {{ p.number }}</span>
+                <span class="admin-payment-meta"><Icon name="key" size="11" /> Ref: {{ p.transactionId || '—' }}</span>
+                <p v-if="p.message" class="admin-payment-msg">“{{ p.message }}”</p>
+                <p v-if="p.note" class="admin-payment-note"><Icon name="info" size="11" /> {{ p.note }}</p>
+                <span class="admin-date"><Icon name="calendar" size="11" /> {{ formatDate(p.createdAt) }} — {{ formatDate(p.handledAt) || 'awaiting decision' }}</span>
+              </div>
+              <div class="admin-support-actions">
+                <div class="input-group support-reply-input"><input v-model="paymentNoteDrafts[p.id]" type="text" placeholder="Verification note (optional)..." class="glow-input" @keydown.enter.prevent="p.status === 'pending' ? approvePayment(p) : null" /><div class="input-glow"></div></div>
+                <button class="admin-action ok" @click="approvePayment(p)" :disabled="p.status === 'approved'"><Icon name="check" size="12" /> Approve</button>
+                <button class="admin-action danger" @click="rejectPayment(p)" :disabled="p.status === 'rejected'"><Icon name="x" size="12" /> Reject</button>
+                <button class="admin-action danger" @click="requestDeleteAdminPayment(p)"><Icon name="trash" size="12" /></button>
+              </div>
+            </div>
+          </div>
+          <div v-else class="admin-empty"><template v-if="adminPayFilter || adminPaySearch">No {{ adminPayFilter ? adminPayFilter : '' }} payments match your search.</template><template v-else>No payments yet. Users will appear here when they submit a manual payment proof.</template></div>
         </div>
 
         <!-- SETTINGS / FOOTER -->
@@ -1318,6 +1489,19 @@
               <label class="admin-field"><span>Currency</span><input v-model="adminSettings.subscriptionCurrency" class="glow-input" /></label>
             </form>
           </div>
+          <div class="admin-section">
+            <h3>Global Appearance <span class="admin-hint">applies to every visitor instantly</span></h3>
+            <label class="admin-field full admin-dark-row">
+              <span class="admin-dark-label"><Icon name="moon" size="15" /> Force Dark Mode site-wide</span>
+              <span class="admin-dark-desc">Turns the whole website into Deep-Space dark mode for every user, overriding their personal theme and dark-mode settings.</span>
+              <button class="switch" :class="{ on: adminSettings.forceDarkMode }" role="switch" :aria-checked="adminSettings.forceDarkMode" @click="adminSettings.forceDarkMode = !adminSettings.forceDarkMode">
+                <span class="switch-knob"></span>
+              </button>
+            </label>
+            <p v-if="adminSettings.forceDarkMode" class="admin-dark-live">
+              <Icon name="check" size="13" /> Dark Mode is currently FORCED for all users — press <strong>Save All Settings</strong> to apply it live.
+            </p>
+          </div>
           <div class="admin-savebar">
             <button class="auth-btn primary" @click="saveAdminSettings" :disabled="adminSaving"><Icon v-if="adminSaving" name="loader" size="14" spin /> <Icon v-else name="check" size="14" /> Save All Settings</button>
             <span v-if="adminSettingsSaved" class="admin-saved-tick">Saved!</span>
@@ -1328,29 +1512,42 @@
         <div v-if="adminTab === 'themes'" class="admin-tab-panel">
           <div class="admin-toolbar">
             <div class="admin-toolbar-title">
-              <Icon name="layers" size="15" /> Design Studio — pick the theme every user's panel uses
+              <Icon name="layers" size="15" /> Design Studio — hover a card to live-preview it, then press Apply to make it live for every user
             </div>
-            <button v-if="adminThemesPreview" class="btn-download-blue" @click="clearPreview"><Icon name="x" size="14" /> Stop preview</button>
           </div>
-          <p v-if="adminThemesPreview" class="theme-preview-note">
-            <Icon name="eye" size="13" /> You are <strong>live previewing</strong> "<strong>{{ currentThemeName }}</strong>". Click "Apply &amp; save" under a card to make it official for all users.
-          </p>
+          <div class="theme-preview-bar">
+            <p class="theme-preview-note">
+              <Icon name="zap" size="13" /> <strong>Hover / focus</strong> any card to preview it right here. Press <strong>Apply</strong> to save it site-wide for all users (pink shows the current live theme).
+            </p>
+            <span v-if="adminThemesPreview" class="theme-live-preview">
+              <Icon name="eye" size="13" /> Previewing <strong>{{ previewThemeName }}</strong>
+            </span>
+          </div>
           <div class="admin-theme-grid">
             <div
               v-for="t in (adminSettings.availableThemes || SITE_THEMES)"
               :key="t.id"
               class="admin-theme-card"
               :class="{
-                active: adminThemesPreview ? adminThemesPreview === t.id : adminSettings.siteTheme === t.id,
+                active: adminSettings.siteTheme === t.id,
                 previewing: adminThemesPreview === t.id
               }"
-              @click="previewSiteTheme(t.id)"
+              tabindex="0"
+              role="button"
+              :aria-pressed="adminSettings.siteTheme === t.id"
+              :aria-label="'Preview theme ' + t.name"
+              @mouseenter="previewSiteTheme(t.id)"
+              @mouseleave="clearPreview()"
+              @focus="previewSiteTheme(t.id)"
+              @blur="clearPreview()"
+              @keydown.enter.prevent="applyThemeToSite(t)"
             >
               <div class="theme-card-preview" :style="themePreviewStyle(t)">
                 <span class="theme-card-dot"></span>
                 <span class="theme-card-line"></span>
                 <span class="theme-card-line short"></span>
                 <span class="theme-card-chip"><span :style="{ background: t.primary }"></span> {{ t.primary }}</span>
+                <span v-if="adminThemesPreview === t.id" class="theme-preview-badge"><Icon name="eye" size="10" /> preview</span>
                 <div class="theme-card-glow" :style="{ background: t.primary }"></div>
               </div>
               <div class="theme-card-name">
@@ -1358,15 +1555,16 @@
                 <span class="theme-swatch" :style="{ background: t.accent }"></span>
                 <span class="theme-swatch" :style="{ background: t.accent2 }"></span>
                 <strong>{{ t.name }}</strong>
-                <em v-if="adminSettings.siteTheme === t.id && !adminThemesPreview">• current</em>
-                <em v-else-if="adminThemesPreview === t.id">• previewing</em>
+                <em v-if="adminSettings.siteTheme === t.id">• live</em>
               </div>
               <button
                 class="admin-theme-apply"
-                :disabled="adminSaving"
+                :disabled="adminSaving || adminSettings.siteTheme === t.id"
                 @click.stop="applyThemeToSite(t)"
               >
-                <Icon name="check" size="13" /> {{ adminSettings.siteTheme === t.id && !adminThemesPreview ? 'Active — saved' : 'Apply &amp; save' }}
+                <Icon v-if="adminSaving && applyingThemeId === t.id" name="loader" size="13" spin />
+                <Icon v-else name="check" size="13" />
+                {{ adminSettings.siteTheme === t.id ? 'Active — live' : 'Apply this theme' }}
               </button>
             </div>
           </div>
@@ -1389,63 +1587,141 @@
         <!-- COMMENTS -->
         <div v-if="adminTab === 'comments'" class="admin-tab-panel">
           <div class="admin-section">
-            <h3>Moderate Comments</h3>
-            <div v-if="adminComments.length" class="admin-comments">
-              <div v-for="c in adminComments" :key="c.id" class="admin-comment-row">
-                <div class="admin-comment-main">
-                  <strong>{{ c.userName }}</strong>
-                  <span class="admin-date">{{ formatDate(c.date) }}</span>
-                  <p>{{ c.text }}</p>
-                </div>
-                <button class="admin-action danger" @click="deleteAdminComment(c)"><Icon name="trash" size="12" /> Remove</button>
+            <div class="admin-section-head">
+              <h3>Moderate Comments <span class="admin-hint">{{ adminComments.length }} total {{ adminComments.length === 1 ? 'comment' : 'comments' }} · {{ filteredAdminComments.length }} shown</span></h3>
+              <div class="admin-comment-tools">
+                <div class="input-group admin-toolbar-search"><input v-model="adminCommentFilter" type="text" placeholder="Search comments, users or movie titles..." class="glow-input" /><Icon name="search" size="14" class="admin-toolbar-search-ic" /><div class="input-glow"></div></div>
+                <button class="btn-download-blue" @click="loadAdminDashboard"><Icon name="refresh" size="14" /> Refresh</button>
               </div>
             </div>
-            <div v-else class="admin-empty">No comments to moderate yet.</div>
+            <div v-if="filteredAdminComments.length" class="admin-comments">
+              <div v-for="c in filteredAdminComments" :key="c.id" class="admin-comment-row">
+                <div class="admin-comment-main">
+                  <div class="admin-comment-head">
+                    <strong>{{ c.userName }}</strong>
+                    <span class="comment-movie-chip"><Icon name="film" size="11" /> {{ c.movieTitle || c.movieId || 'Unknown movie' }}</span>
+                    <span class="admin-date">{{ formatDate(c.date) }}</span>
+                  </div>
+                  <p>{{ c.text }}</p>
+                </div>
+                <button class="admin-action danger" @click="requestDeleteAdminComment(c)"><Icon name="trash" size="12" /> Remove</button>
+              </div>
+            </div>
+            <div v-else class="admin-empty"><template v-if="adminCommentFilter">No comments match your search.</template><template v-else>No comments to moderate yet.</template></div>
           </div>
         </div>
 
         <!-- ANALYTICS -->
         <div v-if="adminTab === 'analytics'" class="admin-tab-panel">
           <div class="admin-toolbar">
-            <div class="admin-toolbar-title">Visitors &amp; website activity</div>
+            <div class="admin-toolbar-title"><Icon name="trendingUp" size="15" /> Analytics — views, likes &amp; comments</div>
             <button class="btn-download-blue" @click="loadAdminDashboard"><Icon name="refresh" size="14" /> Refresh</button>
           </div>
           <div v-if="!analytics" class="admin-empty">Analytics loading…</div>
           <div v-else>
-            <div class="admin-metrics">
-              <div class="admin-card">
+            <div class="admin-metrics admin-metrics-6">
+              <div class="admin-card kpi-card">
                 <h3><Icon name="eye" size="15" /> Total Views</h3>
-                <p>{{ analytics.totalViews || 0 }}</p>
-                <span class="admin-card-sub">all time</span>
+                <p>{{ formatNumber(analytics.totalViews || 0) }}</p>
+                <span class="admin-card-sub">all-time site views</span>
               </div>
-              <div class="admin-card">
-                <h3><Icon name="calendar" size="15" /> Views Today</h3>
-                <p>{{ analytics.todayViews || 0 }}</p>
-                <span class="admin-card-sub">since midnight</span>
+              <div class="admin-card kpi-card">
+                <h3><Icon name="calendar" size="15" /> Views This Week</h3>
+                <p>{{ formatNumber(analytics.weekViews || 0) }}</p>
+                <span class="admin-card-sub">last 7 days <em class="delta-badge" :class="analytics.viewDelta >= 0 ? 'up' : 'down'"><Icon :name="analytics.viewDelta >= 0 ? 'trendingUp' : 'trendingDown'" size="11" /> {{ analytics.viewDelta >= 0 ? '+' : '' }}{{ analytics.viewDelta }}%</em></span>
               </div>
-              <div class="admin-card">
-                <h3><Icon name="trendingUp" size="15" /> This Week</h3>
-                <p>{{ analytics.weekViews || 0 }}</p>
-                <span class="admin-card-sub">last 7 days</span>
-              </div>
-              <div class="admin-card">
+              <div class="admin-card kpi-card">
                 <h3><Icon name="users" size="15" /> Unique Visitors</h3>
-                <p>{{ analytics.uniqueVisitors || 0 }}</p>
+                <p>{{ formatNumber(analytics.uniqueVisitors || 0) }}</p>
                 <span class="admin-card-sub">distinct visitors</span>
+              </div>
+              <div class="admin-card kpi-card">
+                <h3><Icon name="heart" size="15" /> Likes</h3>
+                <p>{{ formatNumber(analytics.totalLikes || 0) }}</p>
+                <span class="admin-card-sub">{{ formatNumber(analytics.likesToday || 0) }} today · {{ formatNumber(analytics.likesMonth || 0) }} this month</span>
+              </div>
+              <div class="admin-card kpi-card">
+                <h3><Icon name="message" size="15" /> Comments</h3>
+                <p>{{ formatNumber(analytics.totalComments || 0) }}</p>
+                <span class="admin-card-sub">{{ formatNumber(analytics.commentsToday || 0) }} today · {{ formatNumber(analytics.commentsMonth || 0) }} this month</span>
+              </div>
+              <div class="admin-card kpi-card">
+                <h3><Icon name="film" size="15" /> Movies Watched</h3>
+                <p>{{ formatNumber(analytics.totalWatchRecords || 0) }}</p>
+                <span class="admin-card-sub">total watch records</span>
               </div>
             </div>
 
             <div class="admin-section">
-              <h3>7-Day Activity <span class="admin-hint">views per day</span></h3>
-              <div class="analytics-bars">
-                <div v-for="d in analytics.last7Days" :key="d.date" class="analytics-bar-col">
-                  <div class="analytics-bar-track">
-                    <div class="analytics-bar" :style="{ height: Math.max(6, (d.count / (analytics.maxDay || 1)) * 100) + '%' }">
-                      <span>{{ d.count }}</span>
-                    </div>
+              <div class="admin-section-head">
+                <h3>14-Day Engagement Trend <span class="admin-hint">views · likes · comments per day</span></h3>
+                <div class="chart-legend">
+                  <span><i class="lg-dot dot-views"></i> Views</span>
+                  <span><i class="lg-dot dot-likes"></i> Likes</span>
+                  <span><i class="lg-dot dot-comments"></i> Comments</span>
+                </div>
+              </div>
+              <div class="analytics-bars bars-14">
+                <div v-for="d in analytics.trend" :key="d.date" class="analytics-bar-col" :title="d.label + ': ' + d.views + ' views, ' + d.likes + ' likes, ' + d.comments + ' comments'">
+                  <div class="tri-bar">
+                    <div class="tri-bar-row avg-view"><div class="tri-fill fill-views" :style="{ height: scaleVal(d.views, analyticsScaleMax) + '%' }"></div></div>
+                    <div class="tri-bar-row avg-likes"><div class="tri-fill fill-likes" :style="{ height: scaleVal(d.likes, analyticsScaleMax) + '%' }"></div></div>
+                    <div class="tri-bar-row avg-comments"><div class="tri-fill fill-comments" :style="{ height: scaleVal(d.comments, analyticsScaleMax) + '%' }"></div></div>
                   </div>
                   <small>{{ d.label }}</small>
                 </div>
+              </div>
+            </div>
+
+            <div class="admin-section">
+              <div class="admin-section-head">
+                <h3><Icon name="trophy" size="15" /> Top Performing Movies</h3>
+                <span class="admin-hint">score = views + likes + comments</span>
+              </div>
+              <div v-if="analytics.topMovies && analytics.topMovies.length" class="top-movies-table">
+                <div class="top-movie-header-row">
+                  <span>Title</span><span>Views</span><span>Likes</span><span>Comments</span><span>Score</span>
+                </div>
+                <div v-for="(m, i) in analytics.topMovies" :key="m.id + '-' + i" class="top-movie-row">
+                  <span class="tm-rank" :class="{ top: i < 3 }">{{ i + 1 }}</span>
+                  <strong class="tm-title">{{ m.title }}</strong>
+                  <span class="tm-cell tm-views">{{ formatNumber(m.views) }}</span>
+                  <span class="tm-cell tm-likes">{{ formatNumber(m.likes) }}</span>
+                  <span class="tm-cell tm-comments">{{ formatNumber(m.comments) }}</span>
+                  <span class="tm-score">{{ formatNumber(m.views + m.likes + m.comments) }}</span>
+                </div>
+              </div>
+              <div v-else class="admin-empty">No movie activity yet — views, likes and comments will appear here.</div>
+            </div>
+
+            <div class="analytics-row">
+              <div class="admin-section">
+                <h3><Icon name="heart" size="15" /> Top Liked Movies</h3>
+                <div v-if="analytics.topLikedMovies && analytics.topLikedMovies.length" class="admin-simple-list">
+                  <div v-for="(m, i) in analytics.topLikedMovies.slice(0, 6)" :key="i" class="admin-simple-row">
+                    <span class="rank">{{ i + 1 }}</span>
+                    <div class="bar-cell-mini">
+                      <strong>{{ m.title }}</strong>
+                      <div class="mini-track"><div class="mini-fill fill-likes" :style="{ width: scaleVal(m.likes, analytics.topLikedMovies[0].likes) + '%' }"></div></div>
+                    </div>
+                    <span class="admin-simple-count"><Icon name="heart" size="11" /> {{ formatNumber(m.likes) }}</span>
+                  </div>
+                </div>
+                <div v-else class="admin-empty">No likes yet. Users can like movies from the detail page.</div>
+              </div>
+              <div class="admin-section">
+                <h3><Icon name="message" size="15" /> Top Commented Movies</h3>
+                <div v-if="analytics.topCommentedMovies && analytics.topCommentedMovies.length" class="admin-simple-list">
+                  <div v-for="(m, i) in analytics.topCommentedMovies.slice(0, 6)" :key="i" class="admin-simple-row">
+                    <span class="rank">{{ i + 1 }}</span>
+                    <div class="bar-cell-mini">
+                      <strong>{{ m.title }}</strong>
+                      <div class="mini-track"><div class="mini-fill fill-comments" :style="{ width: scaleVal(m.comments, analytics.topCommentedMovies[0].comments) + '%' }"></div></div>
+                    </div>
+                    <span class="admin-simple-count"><Icon name="message" size="11" /> {{ formatNumber(m.comments) }}</span>
+                  </div>
+                </div>
+                <div v-else class="admin-empty">No comments yet. Comments appear here as users chat on movies.</div>
               </div>
             </div>
 
@@ -1459,7 +1735,7 @@
                       <strong>{{ m.title }}</strong>
                       <small>{{ m.channelTitle }}</small>
                     </div>
-                    <span v-if="m.plays" class="admin-simple-count">{{ m.plays }} plays</span>
+                    <span v-if="m.plays" class="admin-simple-count">{{ formatNumber(m.plays) }} plays</span>
                   </div>
                 </div>
                 <div v-else class="admin-empty">No music played yet. Get people jamming on YOUTMUS!</div>
@@ -1469,11 +1745,11 @@
                 <div v-if="analytics.viewsByPage && analytics.viewsByPage.length" class="admin-simple-list">
                   <div v-for="(p, i) in analytics.viewsByPage" :key="i" class="admin-simple-row">
                     <span class="rank">{{ i + 1 }}</span>
-                    <div class="admin-simple-main">
+                    <div class="bar-cell-mini">
                       <strong>{{ p.page }}</strong>
-                      <small>page visits</small>
+                      <div class="mini-track"><div class="mini-fill fill-views" :style="{ width: scaleVal(p.count, analytics.viewsByPage[0].count) + '%' }"></div></div>
                     </div>
-                    <span class="admin-simple-count">{{ p.count }}</span>
+                    <span class="admin-simple-count">{{ formatNumber(p.count) }}</span>
                   </div>
                 </div>
                 <div v-else class="admin-empty">No page views yet.</div>
@@ -1524,17 +1800,78 @@
                 <div class="input-group support-reply-input"><input v-model="supportReplyDrafts[req.id]" type="text" placeholder="Write a reply to this user..." class="glow-input" @keydown.enter.prevent="sendSupportReply(req)" /><div class="input-glow"></div></div>
                 <button class="admin-action" @click="sendSupportReply(req)" :disabled="!supportReplyDrafts[req.id]"><Icon name="send" size="12" /> Reply</button>
                 <button class="admin-action" @click="toggleSupportStatus(req)"><Icon name="check" size="12" /> {{ req.status === 'resolved' ? 'Reopen' : 'Resolve' }}</button>
-                <button class="admin-action danger" @click="deleteAdminSupport(req)"><Icon name="trash" size="12" /> Delete</button>
+                <button class="admin-action danger" @click="requestDeleteAdminSupport(req)"><Icon name="trash" size="12" /> Delete</button>
               </div>
             </div>
           </div>
           <div v-else class="admin-empty">No user requests yet.</div>
         </div>
 
-        <button class="back-btn" @click="resetHome"><Icon name="arrowLeft" size="15" /> BACK TO THEATER</button>
+        </main>
+        </div>
+        <button class="back-btn admin-mobile-back" @click="resetHome"><Icon name="arrowLeft" size="15" /> BACK TO THEATER</button>
       </div>
 
-      <!-- Watchlist Selection Modal -->
+      <!-- Admin User Detail Modal -->
+      <div v-if="selectedAdminUser && currentPageName === 'admin'" class="modal-overlay" @click="selectedAdminUser = null">
+        <div class="modal-content admin-user-modal" @click.stop>
+          <button class="modal-x" @click="selectedAdminUser = null"><Icon name="x" size="16" /></button>
+          <div class="aum-head">
+            <img v-if="selectedAdminUser.avatar" :src="selectedAdminUser.avatar" alt="" class="admin-avatar lg" />
+            <div v-else class="admin-avatar lg"><Icon name="user" size="22" /></div>
+            <div class="aum-title">
+              <h3>{{ selectedAdminUser.name || selectedAdminUser.username || selectedAdminUser.email }}</h3>
+              <p>{{ selectedAdminUser.email }}</p>
+              <div class="admin-user-badges">
+                <span class="admin-chip" :class="selectedAdminUser.role === 'admin' ? 'chip-admin' : 'chip-user'">{{ selectedAdminUser.role }}</span>
+                <span class="admin-chip" :class="selectedAdminUser.active !== false ? 'chip-on' : 'chip-off'">{{ selectedAdminUser.active !== false ? 'active' : 'blocked' }}</span>
+                <span v-if="selectedAdminUser.lifetimeFree" class="admin-chip chip-lifetime">lifetime free</span>
+                <span v-else-if="selectedAdminUser.subscriptionTier === 'premium'" class="admin-chip chip-premium">premium</span>
+                <span v-else class="admin-chip chip-trial">free / trial</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="aum-grid">
+            <div class="aum-info">
+              <span><Icon name="at" size="12" /> username</span><strong>@{{ selectedAdminUser.username || '—' }}</strong>
+            </div>
+            <div class="aum-info">
+              <span><Icon name="smartphone" size="12" /> phone</span><strong>{{ selectedAdminUser.phone || '—' }}</strong>
+            </div>
+            <div class="aum-info">
+              <span><Icon name="mapPin" size="12" /> location</span><strong>{{ selectedAdminUser.location || '—' }}</strong>
+            </div>
+            <div class="aum-info">
+              <span><Icon name="calendar" size="12" /> joined</span><strong>{{ formatDate(selectedAdminUser.createdAt) }}</strong>
+            </div>
+            <div class="aum-info">
+              <span><Icon name="heart" size="12" /> likes</span><strong>{{ selectedAdminUser.favoriteCount || 0 }}</strong>
+            </div>
+            <div class="aum-info">
+              <span><Icon name="bell" size="12" /> notifications</span><strong>{{ selectedAdminUser.notificationCount || 0 }}</strong>
+            </div>
+            <div class="aum-info">
+              <span><Icon name="award" size="12" /> premium until</span><strong>{{ selectedAdminUser.lifetimeFree ? 'Forever' : (formatDate(selectedAdminUser.subscriptionExpiry) || '—') }}</strong>
+            </div>
+            <div class="aum-info">
+              <span><Icon name="bag" size="12" /> payment method</span><strong>{{ selectedAdminUser.paymentMethod?.provider || 'none' }} {{ selectedAdminUser.paymentMethod?.number || '' }}</strong>
+            </div>
+          </div>
+          <p v-if="selectedAdminUser.bio" class="aum-bio">{{ selectedAdminUser.bio }}</p>
+          <p v-if="selectedAdminUser.fromFallback" class="aum-fallback"><Icon name="database" size="12" /> Stored in the persistent fallback store — created while the database was offline. This account is safe and kept forever.</p>
+
+          <div class="aum-actions">
+            <button class="admin-action" :class="{ danger: selectedAdminUser.active !== false }" @click="toggleUserActive(selectedAdminUser)"><Icon name="lock" size="12" /> {{ selectedAdminUser.active !== false ? 'Block' : 'Unblock' }}</button>
+            <button class="admin-action" :class="{ lifetime: selectedAdminUser.lifetimeFree }" @click="toggleLifetimeFree(selectedAdminUser)"><Icon name="zap" size="12" /> {{ selectedAdminUser.lifetimeFree ? 'Remove Lifetime Free' : 'Free Forever' }}</button>
+            <button class="admin-action" @click="toggleUserPremium(selectedAdminUser)"><Icon name="award" size="12" /> {{ selectedAdminUser.subscriptionTier === 'premium' ? 'Revoke Premium' : 'Give Premium' }}</button>
+            <button class="admin-action" @click="resetUserTrial(selectedAdminUser)" :disabled="isAdminUserRow(selectedAdminUser)"><Icon name="refresh" size="12" /> Reset Trial</button>
+            <button v-if="selectedAdminUser.role !== 'admin'" class="admin-action" @click="toggleUserAdmin(selectedAdminUser)"><Icon name="shield" size="12" /> Make Admin</button>
+            <button class="admin-action danger" @click="deleteSelectedAdminUser" :disabled="isAdminUserRow(selectedAdminUser)"><Icon name="trash" size="12" /> Delete User</button>
+            <button class="admin-action" @click="closeAdminUserModal"><Icon name="close" size="12" /> Done</button>
+          </div>
+        </div>
+      </div>
       <div v-if="showWatchlistModal" class="modal-overlay" @click="closeWatchlistModal">
         <div class="modal-content" @click.stop>
           <h3>Add to Watchlist</h3>
@@ -1663,13 +2000,25 @@
             <div v-for="n in 10" :key="n" class="chat-particle" :style="{ animationDelay: `${n * 0.5}s` }"></div>
           </div>
           <div class="chat-header">
-            <h3>AI Assistant</h3>
+            <div class="chat-head-txt">
+              <h3>AI Assistant</h3>
+              <span class="chat-sub"><em class="dot"></em> Online <b>·</b> Powered by Gemini</span>
+            </div>
             <button class="chat-close" @click="toggleChat"><Icon name="x" size="18" /></button>
           </div>
           <div class="chat-messages" ref="chatMessagesRef">
             <div v-for="(msg, index) in chatMessages" :key="index" :class="['chat-message', msg.role]">
-              <div class="message-content">{{ msg.content }}</div>
+              <div v-if="msg.role === 'assistant'" class="message-content" v-html="formatAI(msg.content)"></div>
+              <div v-else class="message-content">{{ msg.content }}</div>
             </div>
+            <div v-if="isChatLoading" class="chat-message assistant">
+              <div class="typing-dots"><span></span><span></span><span></span></div>
+            </div>
+          </div>
+          <div v-if="chatMessages.length === 1" class="chat-quick-chips">
+            <button v-for="chip in chatQuickChips" :key="chip" class="chip" @click="runQuickChip(chip)">
+              {{ chip }}
+            </button>
           </div>
           <div class="chat-input-area">
             <input
@@ -1704,6 +2053,21 @@
             <Icon name="play" size="14" />
           </a>
           <button class="yt-mini-close" @click="stopYoutmus" title="Stop music"><Icon name="x" size="15" /></button>
+        </div>
+      </Transition>
+
+      <!-- Admin confirm dialog -->
+      <Transition name="modal-fade">
+        <div v-if="adminConfirm.open" class="modal-overlay admin-confirm-overlay" @click.self="closeAdminConfirm">
+          <div class="modal-content admin-confirm" @click.stop>
+            <div class="admin-confirm-ic"><Icon name="alert" size="22" /></div>
+            <h3 class="admin-confirm-title">{{ adminConfirm.title }}</h3>
+            <p class="admin-confirm-msg">{{ adminConfirm.message }}</p>
+            <div class="admin-confirm-actions">
+              <button class="admin-action" @click="closeAdminConfirm"><Icon name="x" size="12" /> Cancel</button>
+              <button class="admin-action danger" @click="runAdminConfirm"><Icon name="trash" size="12" /> Confirm</button>
+            </div>
+          </div>
         </div>
       </Transition>
 
@@ -1779,15 +2143,12 @@
         <p>{{ siteSettings.footerText || '&copy; 2026 ' + siteSettings.siteName + ' Filmz. All rights reserved.' }}</p>
       </div>
     </footer>
-
-    <AIAssistant />
   </div>
 </template>
 
 <script setup>
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue';
 import axios from 'axios';
-import AIAssistant from './AIAssistant.vue';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api');
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || 'e7db3a3c0e678db81b80238ab2bf0afa';
@@ -1823,6 +2184,7 @@ const youtmusChip = ref('Trending');
 const youtmusItems = ref([]);
 const youtmusLabel = ref('Trending Music');
 const youtmusSearch = ref(null);
+const ytLastQuery = ref('');
 const ytPlaying = ref(null);
 const ytLoading = ref(false);
 const ytError = ref('');
@@ -1870,6 +2232,7 @@ const runYoutmusChip = async (chip) => {
   youtmusSearch.value = null;
   youtmusQuery.value = '';
   const q = chip === 'Trending' ? '' : chip;
+  ytLastQuery.value = q;
   youtmusLabel.value = chip === 'Trending' ? 'Trending Music' : `${chip} Playlist`;
   await loadYoutmus(q);
 };
@@ -1880,6 +2243,7 @@ const runYoutmusSearch = async () => {
   youtmusChip.value = 'Trending';
   youtmusSearch.value = q;
   ytPlaying.value = null;
+  ytLastQuery.value = q;
   youtmusLabel.value = `Results for “${q}”`;
   await loadYoutmus(q);
 };
@@ -1888,6 +2252,12 @@ const resetYoutmusList = () => {
   youtmusSearch.value = null;
   ytPlaying.value = null;
   runYoutmusChip(youtmusChip.value === 'Trending' ? 'Trending' : youtmusChip.value);
+};
+
+// Re-run the last chip or search after a hiccup.
+const retryYoutmus = () => {
+  if (ytLoading.value) return;
+  loadYoutmus(ytLastQuery.value);
 };
 
 const loadYoutmus = async (q) => {
@@ -2121,11 +2491,12 @@ const fullMovieUrl = ref(null);
 const currentMovieId = ref(null);
 const currentMovieDownloadUrl = ref(null);
 const activeProviderIndex = ref(0);
+const playerLoaded = ref(true);
 const playerProviders = [
-  { name: 'VidSrc', build: (type, id) => `https://vidsrc.to/embed/${type}/${id}` },
-  { name: 'MultiEmbed', build: (type, id) => `https://multiembed.mov/directstream.php?video_id=${id}&tmdb=1` },
-  { name: 'EmbedSu', build: (type, id) => `https://embed.su/embed/${type}/${id}` },
-  { name: 'PlayerHub', build: (type, id) => `https://playerhub.xyz/embed/${type}/${id}` }
+  { name: 'VidSrc', build: (type, id) => `https://vidsrc.to/embed/${type}/${id}${type === 'tv' ? '/1/1' : ''}` },
+  { name: 'VidLynk', build: (type, id) => `https://vidlink.pro/${type}/${id}${type === 'tv' ? '/1/1' : ''}` },
+  { name: 'MultiEmbed', build: (type, id) => `https://multiembed.mov/?tmdb=1&video_id=${id}${type === 'tv' ? '&s=1&e=1' : ''}` },
+  { name: '2Embed', build: (type, id) => `https://2embed.cc/embed/${type}/${id}` }
 ];
 const currentEmbedUrl = computed(() => {
   if (!currentMovieId.value) return null;
@@ -2195,6 +2566,40 @@ const analytics = ref(null);
 const movieViews = ref([]);
 const adminTab = ref('overview');
 const adminUserFilter = ref('');
+const selectedAdminUser = ref(null);
+const adminPayments = ref([]);
+const adminPayFilter = ref('');
+const paymentStats = ref({ all: 0, pending: 0, approved: 0, rejected: 0 });
+const paymentNoteDrafts = ref({});
+const grantPayment = ref({ userId: '', plan: 'monthly', transactionId: '', message: '', approve: true });
+const manualTxRef = ref('');
+const manualTxMsg = ref('');
+const adminLastUpdated = ref('');
+const adminConfirm = ref({ open: false, title: '', message: '', action: null });
+const askConfirm = (title, message, action) => { adminConfirm.value = { open: true, title, message, action }; };
+const closeAdminConfirm = () => { adminConfirm.value.open = false; };
+const runAdminConfirm = () => { const a = adminConfirm.value.action; closeAdminConfirm(); if (a) a(); };
+const adminPaySearch = ref('');
+const adminCommentFilter = ref('');
+
+const adminTabIcons = {
+  overview: 'grid', users: 'users', payments: 'bag', themes: 'layers',
+  settings: 'sliders', notifications: 'bell', comments: 'message',
+  analytics: 'trendingUp', support: 'mail'
+};
+const adminTabTitles = {
+  overview: ['Dashboard Overview', 'Live health of your platform at a glance'],
+  users: ['User Management', 'Every account ever created — click any card to view and manage it'],
+  payments: ['Payments', 'Verify manual mobile money payments and activate premium'],
+  settings: ['Site & Footer', 'Edit branding, contact details and subscription rules'],
+  themes: ['Design Studio', 'Pick a theme — it goes live for every user instantly'],
+  notifications: ['Broadcast', 'Send an alert to every active user'],
+  comments: ['Comment Moderation', 'Review and remove inappropriate comments'],
+  analytics: ['Analytics', 'Visitors, music plays and page activity'],
+  support: ['Support Inbox', 'Reply to user requests and mark them resolved']
+};
+const adminTabTitle = computed(() => adminTabTitles[adminTab.value]?.[0] || 'Administration');
+const adminTabSubtitle = computed(() => adminTabTitles[adminTab.value]?.[1] || '');
 const adminComments = ref([]);
 const adminSaving = ref(false);
 const adminSettingsSaved = ref(false);
@@ -2246,7 +2651,8 @@ const locDetecting = ref(false);
 const momoProviders = [
   { id: 'MTN', name: 'MTN Mobile Money', note: 'Standard MTN MoMo — most reliable' },
   { id: 'Airtel', name: 'Airtel Money', note: 'Airtel Rwanda mobile money' },
-  { id: 'MTN Pay', name: 'Pay with MTN MoMo (auto)', note: 'Online request-to-pay prompt' }
+  { id: 'MTN Pay', name: 'Pay with MTN MoMo (auto)', note: 'Online request-to-pay prompt' },
+  { id: 'manual', name: 'Pay manually', note: 'Send the money directly, then we activate you' }
 ];
 const planMonthlyPrice = computed(() => subscriptionStatus.value.pricePerMonth || 4000);
 const planYearlyPrice = computed(() => Math.round(planMonthlyPrice.value * 10));
@@ -2328,10 +2734,11 @@ const SITE_THEMES = [
   { id: 'sakura',   name: 'Sakura Blossom',  primary: '#ff9ecb', accent: '#ff5d8f', accent2: '#ffd1e8' }
 ];
 const adminThemesPreview = ref(localStorage.getItem('admin_theme_preview') || '');
+const applyingThemeId = ref('');
 const siteTheme = ref('default');
 const userThemeChoice = ref(localStorage.getItem('user_theme') || '');
 
-const currentTheme = ref(localStorage.getItem('theme') || 'default');
+const currentTheme = ref(localStorage.getItem('user_theme') || localStorage.getItem('theme') || 'default');
 const darkMode = ref(localStorage.getItem('dark_mode') === 'true');
 const reduceMotion = ref(localStorage.getItem('reduce_motion') === 'true');
 const isSettingsOpen = ref(false);
@@ -2725,8 +3132,11 @@ const playFullMovie = async (item) => {
 
   // Play the full movie right inside the app
   activeProviderIndex.value = 0;
+  playerLoaded.value = false;
   fullMovieUrl.value = currentEmbedUrl.value;
   trailerUrl.value = null;
+  autoAdvanceCount.current = 0;
+  armPlayerAutoAdvance();
   await nextTick();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -2743,8 +3153,45 @@ const playFullMovie = async (item) => {
 const switchProvider = (index) => {
   if (!currentMovieId.value) return;
   activeProviderIndex.value = index;
+  playerLoaded.value = false;
   fullMovieUrl.value = currentEmbedUrl.value;
   showToast(`Switched to ${playerProviders[index].name} server.`, 'info');
+  armPlayerAutoAdvance();
+};
+
+// --- Automatic source failover: if a provider can't load, hop to the next one.
+const playerAutoTimer = ref(null);
+const autoAdvanceCount = { current: 0 };
+const MAX_AUTO_ADVANCE = 3;
+
+const armPlayerAutoAdvance = () => {
+  if (playerAutoTimer.value) clearTimeout(playerAutoTimer.value);
+  playerAutoTimer.value = setTimeout(() => {
+    if (!playerLoaded.value && fullMovieUrl.value && autoAdvanceCount.current < MAX_AUTO_ADVANCE) {
+      const next = (activeProviderIndex.value + 1) % playerProviders.length;
+      autoAdvanceCount.current += 1;
+      switchProvider(next);
+      showToast(`Source didn't load — auto-switched to ${playerProviders[next].name}.`, 'warning');
+    } else {
+      playerAutoTimer.value = null;
+    }
+  }, 9000);
+};
+
+const stopPlayerAutoAdvance = () => {
+  if (playerAutoTimer.value) {
+    clearTimeout(playerAutoTimer.value);
+    playerAutoTimer.value = null;
+  }
+};
+
+const handlePlayerError = () => {
+  if (!fullMovieUrl.value) return; // never auto-hop a trailer
+  if (autoAdvanceCount.current >= MAX_AUTO_ADVANCE) return;
+  const next = (activeProviderIndex.value + 1) % playerProviders.length;
+  autoAdvanceCount.current += 1;
+  switchProvider(next);
+  showToast(`Source is unreachable — tried ${playerProviders[next].name} instead.`, 'warning');
 };
 
 const openCurrentMovieInTab = () => {
@@ -2874,13 +3321,30 @@ const playTrailer = async (item) => {
       trailer = res.data.results.find(v => supported.includes(v.site));
     }
     let url = getTrailerEmbedUrl(trailer);
+
+    // Second chance: if TMDB had no trailer, search YouTube for the official trailer.
     if (!url) {
-      const type = mode.value === 'movie' ? 'movie' : 'tv';
-      url = `https://vidsrc.to/embed/${type}/${item.id}`;
+      try {
+        const title = (item.title || item.name || '').trim();
+        if (title) {
+          const tr = await apiClient.get('/trailer/' + encodeURIComponent(title));
+          if (tr.data && tr.data.videoId) {
+            url = `https://www.youtube-nocookie.com/embed/${tr.data.videoId}?autoplay=1&modestbranding=1&rel=0&playsinline=1`;
+          }
+        }
+      } catch (e) { /* trailer search failed, fall through */ }
     }
+
+    // Last resort: no trailer at all — go straight to the main feature.
+    if (!url) {
+      showToast('No trailer found here — playing the full movie instead.', 'info');
+      return playFullMovie(item);
+    }
+
     currentMovieTitle.value = item.title || item.name || 'Trailer';
     currentMovieId.value = item.id;
     currentMovieDownloadUrl.value = null;
+    playerLoaded.value = false;
     fullMovieUrl.value = null;
     trailerUrl.value = url;
     await loadComments(item.id);
@@ -2891,11 +3355,19 @@ const playTrailer = async (item) => {
 };
 
 const closePlayer = () => {
+  stopPlayerAutoAdvance();
+  autoAdvanceCount.current = 0;
   trailerUrl.value = null;
   fullMovieUrl.value = null;
   currentMovieId.value = null;
   currentMovieDownloadUrl.value = null;
   comments.value = [];
+  playerLoaded.value = true;
+};
+
+const onPlayerLoaded = () => {
+  stopPlayerAutoAdvance();
+  playerLoaded.value = true;
 };
 
 const loadComments = async (movieId = null) => {
@@ -2916,6 +3388,7 @@ const submitComment = async () => {
   try {
     const payload = {
       movieId: currentMovieId.value || currentMovieTitle.value,
+      movieTitle: typeof currentMovieTitle.value === 'string' ? currentMovieTitle.value : '',
       userName: commentName.value,
       text: commentText.value
     };
@@ -3288,6 +3761,24 @@ const formatDate = (iso) => {
   } catch (e) { return ''; }
 };
 
+const formatNumber = (n) => {
+  const num = Number(n || 0);
+  if (isNaN(num)) return '0';
+  if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(num);
+};
+
+const scaleVal = (v, m) => Math.max(5, Math.round((Number(v || 0) / Math.max(1, Number(m || 0))) * 100));
+
+const analyticsScaleMax = computed(() => {
+  const a = analytics.value;
+  if (!a) return 1;
+  if (a.maxE) return a.maxE;
+  const max = Math.max(1, ...(a.trend || []).flatMap(d => [d.views || 0, d.likes || 0, d.comments || 0]));
+  return max;
+});
+
 // === SUBSCRIPTION / MOBILE MONEY ===
 const loadSubscriptionStatus = async () => {
   try {
@@ -3448,7 +3939,6 @@ const createAndAddToList = async () => {
 
 const deleteAdminUser = async (userId) => {
   try {
-    if (!confirm('Are you sure you want to permanently remove this user and all their data?')) return;
     await apiClient.delete(`/admin/users/${userId}`);
     adminUsers.value = adminUsers.value.filter(u => u.id !== userId);
     showToast('User removed successfully.');
@@ -3479,7 +3969,7 @@ const updateAdminUser = async (u, patch) => {
   }
 };
 
-const toggleUserActive = (u) => updateAdminUser(u, { active: u.active !== false });
+const toggleUserActive = (u) => updateAdminUser(u, { active: u.active === false });
 const toggleUserPremium = (u) => updateAdminUser(u, {
   subscriptionTier: u.subscriptionTier === 'premium' ? 'free' : 'premium',
   subscriptionExpiry: u.subscriptionTier === 'premium' ? null : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -3492,6 +3982,16 @@ const loadSiteSettings = async () => {
     const res = await apiClient.get('/settings/public');
     siteSettings.value = { ...siteSettings.value, ...res.data, features: res.data.features || siteSettings.value.features };
     if (res.data.siteTheme) siteTheme.value = res.data.siteTheme;
+    // The admin can force the whole website into dark mode — that wins for everyone.
+    if (res.data.forceDarkMode === true) {
+      darkMode.value = true;
+      localStorage.setItem('dark_mode', 'true');
+    }
+    // Follow the admin's site-wide theme unless this visitor picked a personal one.
+    if (!localStorage.getItem('user_theme')) {
+      currentTheme.value = siteTheme.value;
+      localStorage.setItem('theme', siteTheme.value);
+    }
     changeTheme();
   } catch (e) { console.error('Site settings load error:', e); }
 };
@@ -3514,6 +4014,7 @@ const loadAdminSettings = async () => {
       subscriptionPrice: s.subscriptionPrice ?? 4000,
       subscriptionCurrency: s.subscriptionCurrency || 'RWF',
       siteTheme: s.siteTheme || 'default',
+      forceDarkMode: s.forceDarkMode === true,
       availableThemes: s.availableThemes || SITE_THEMES
     };
     adminFeaturesText.value = (s.features || []).join(', ');
@@ -3543,6 +4044,7 @@ const saveAdminSettings = async () => {
       subscriptionPrice: s.subscriptionPrice,
       subscriptionCurrency: s.subscriptionCurrency,
       siteTheme: s.siteTheme || adminSettings.value.siteTheme,
+      forceDarkMode: s.forceDarkMode === true,
       availableThemes: s.availableThemes || adminSettings.value.availableThemes
     };
     adminFeaturesText.value = (s.features || []).join(', ');
@@ -3551,6 +4053,11 @@ const saveAdminSettings = async () => {
       localStorage.removeItem('user_theme');
       userThemeChoice.value = '';
       currentTheme.value = s.siteTheme;
+      changeTheme();
+    }
+    if (s.forceDarkMode === true) {
+      darkMode.value = true;
+      localStorage.setItem('dark_mode', 'true');
       changeTheme();
     }
     await loadSiteSettings();
@@ -3562,6 +4069,25 @@ const saveAdminSettings = async () => {
     showToast('Could not save settings.', 'danger');
   } finally {
     adminSaving.value = false;
+  }
+};
+
+// One-tap command-center control: flip the site-wide dark mode on/off and save it instantly.
+const toggleSiteDarkQuick = async () => {
+  if (adminSaving.value) return;
+  adminSettings.value.forceDarkMode = !adminSettings.value.forceDarkMode;
+  try {
+    await apiClient.put('/admin/settings', {
+      ...adminSettings.value,
+      features: adminFeaturesText.value.split(',').map(f => f.trim()).filter(Boolean)
+    });
+    darkMode.value = adminSettings.value.forceDarkMode;
+    localStorage.setItem('dark_mode', adminSettings.value.forceDarkMode ? 'true' : 'false');
+    changeTheme();
+    showToast(adminSettings.value.forceDarkMode ? 'Dark Mode is now ON for the whole site.' : 'Dark Mode switched OFF — back to the site theme.', adminSettings.value.forceDarkMode ? 'info' : 'success');
+  } catch (e) {
+    adminSettings.value.forceDarkMode = !adminSettings.value.forceDarkMode;
+    showToast('Could not update dark mode setting.', 'danger');
   }
 };
 
@@ -3588,10 +4114,13 @@ const broadcastNotification = async () => {
   }
 };
 
-const deleteAdminComment = async (c) => {
+const requestDeleteAdminComment = (c) => {
+  askConfirm('Remove comment', `Delete the comment by "${c.userName || 'user'}"? This cannot be undone.`, () => deleteAdminComment(c.id));
+};
+const deleteAdminComment = async (commentId) => {
   try {
-    await apiClient.delete(`/admin/comments/${c.id}`);
-    adminComments.value = adminComments.value.filter(x => x.id !== c.id);
+    await apiClient.delete(`/admin/comments/${commentId}`);
+    adminComments.value = adminComments.value.filter(x => x.id !== commentId);
     showToast('Comment removed.');
   } catch (error) {
     console.error('Delete comment error:', error);
@@ -3657,10 +4186,13 @@ const toggleSupportStatus = async (req) => {
   }
 };
 
-const deleteAdminSupport = async (req) => {
+const requestDeleteAdminSupport = (req) => {
+  askConfirm('Delete request', `Remove the support request "${req.subject}" from ${req.userName || 'user'}? This cannot be undone.`, () => deleteAdminSupport(req.id));
+};
+const deleteAdminSupport = async (requestId) => {
   try {
-    await apiClient.delete(`/admin/support/${req.id}`);
-    adminSupport.value = adminSupport.value.filter(x => x.id !== req.id);
+    await apiClient.delete(`/admin/support/${requestId}`);
+    adminSupport.value = adminSupport.value.filter(x => x.id !== requestId);
     showToast('Request removed.');
   } catch (error) {
     console.error('Delete support error:', error);
@@ -3689,6 +4221,153 @@ const filteredAdminUsers = computed(() => {
   );
 });
 
+const filteredAdminPayments = computed(() => {
+  let list = adminPayments.value;
+  if (adminPayFilter.value) list = list.filter(p => p.status === adminPayFilter.value);
+  const q = adminPaySearch.value.trim().toLowerCase();
+  if (q) {
+    list = list.filter(p =>
+      (p.userName || '').toLowerCase().includes(q) ||
+      (p.email || '').toLowerCase().includes(q) ||
+      (p.number || '').toLowerCase().includes(q) ||
+      (p.transactionId || '').toLowerCase().includes(q) ||
+      `${p.amount || ''}`.includes(q)
+    );
+  }
+  return list;
+});
+
+const filteredAdminComments = computed(() => {
+  const q = adminCommentFilter.value.trim().toLowerCase();
+  if (!q) return adminComments.value;
+  return adminComments.value.filter(c =>
+    (c.text || '').toLowerCase().includes(q) ||
+    (c.userName || '').toLowerCase().includes(q) ||
+    (c.movieTitle || '').toLowerCase().includes(q)
+  );
+});
+
+const openAdminUser = (u) => { selectedAdminUser.value = u; };
+const closeAdminUserModal = () => { selectedAdminUser.value = null; };
+const requestDeleteAdminUser = (u) => {
+  askConfirm('Delete user', `Permanently remove "${u.name || u.username || u.email}" and all their data? This cannot be undone.`, () => deleteAdminUser(u.id));
+};
+const deleteSelectedAdminUser = async () => {
+  const u = selectedAdminUser.value;
+  if (!u) return;
+  closeAdminUserModal();
+  requestDeleteAdminUser(u);
+};
+
+const loadAdminPayments = async () => {
+  try {
+    const res = await apiClient.get('/admin/payments');
+    adminPayments.value = res.data.payments || [];
+    paymentStats.value = res.data.counts || { all: adminPayments.value.length, pending: 0, approved: 0, rejected: 0 };
+    paymentStats.value.all = adminPayments.value.length;
+  } catch (error) {
+    console.error('Load payments error:', error);
+    adminPayments.value = [];
+  }
+};
+
+const approvePayment = async (p) => {
+  try {
+    const note = (paymentNoteDrafts.value[p.id] || '').trim();
+    const res = await apiClient.post(`/admin/payments/${p.id}/approve`, { note });
+    paymentNoteDrafts.value[p.id] = '';
+    showToast(res.data.message || 'Payment approved — premium granted.');
+    const i = adminPayments.value.findIndex(x => x.id === p.id);
+    if (i > -1) adminPayments.value[i] = { ...adminPayments.value[i], status: 'approved', note: note || p.note, handledAt: new Date().toISOString() };
+    await loadAdminDashboard();
+    await loadAdminPayments();
+  } catch (error) {
+    console.error('Approve payment error:', error);
+    showToast(error.response?.data?.error || 'Could not approve payment.', 'danger');
+  }
+};
+
+const rejectPayment = async (p) => {
+  try {
+    const note = (paymentNoteDrafts.value[p.id] || '').trim();
+    await apiClient.post(`/admin/payments/${p.id}/reject`, { note });
+    paymentNoteDrafts.value[p.id] = '';
+    showToast('Payment marked as rejected.');
+    const i = adminPayments.value.findIndex(x => x.id === p.id);
+    if (i > -1) adminPayments.value[i] = { ...adminPayments.value[i], status: 'rejected', note: note || p.note, handledAt: new Date().toISOString() };
+    await loadAdminPayments();
+  } catch (error) {
+    console.error('Reject payment error:', error);
+    showToast(error.response?.data?.error || 'Could not reject payment.', 'danger');
+  }
+};
+
+const requestDeleteAdminPayment = (p) => {
+  askConfirm('Delete payment record', `Remove the "${p.amount} ${p.currency}" payment from ${p.userName}? This cannot be undone.`, () => deleteAdminPayment(p.id));
+};
+const deleteAdminPayment = async (paymentId) => {
+  try {
+    await apiClient.delete(`/admin/payments/${paymentId}`);
+    adminPayments.value = adminPayments.value.filter(x => x.id !== paymentId);
+    showToast('Payment record deleted.');
+    await loadAdminPayments();
+  } catch (error) {
+    console.error('Delete payment error:', error);
+    showToast('Could not delete payment.', 'danger');
+  }
+};
+
+const createAdminPayment = async () => {
+  adminSaving.value = true;
+  try {
+    const res = await apiClient.post('/admin/payments', {
+      userId: grantPayment.value.userId,
+      plan: grantPayment.value.plan,
+      transactionId: grantPayment.value.transactionId,
+      message: grantPayment.value.message,
+      approve: grantPayment.value.approve
+    });
+    showToast(res.data.message || 'Payment recorded.');
+    grantPayment.value = { userId: '', plan: 'monthly', transactionId: '', message: '', approve: true };
+    await loadAdminPayments();
+    await loadAdminDashboard();
+  } catch (error) {
+    console.error('Create payment error:', error);
+    showToast(error.response?.data?.error || 'Could not record payment.', 'danger');
+  } finally {
+    adminSaving.value = false;
+  }
+};
+
+const submitManualPayment = async (plan = selectedPlan.value) => {
+  if (!momoNumber.value.trim()) { showToast('Enter your Mobile Money number first', 'warning'); return; }
+  subLoading.value = true;
+  subMessage.value = '';
+  premiumSteps.value = 1;
+  try {
+    const res = await apiClient.post('/subscription/manual', {
+      provider: momoProvider.value === 'manual' ? 'MTN' : momoProvider.value,
+      number: momoNumber.value.trim(),
+      name: momoName.value.trim(),
+      plan,
+      transactionId: manualTxRef.value.trim(),
+      message: manualTxMsg.value.trim()
+    });
+    subMessage.value = res.data.message || 'Manual payment request recorded!';
+    subOk.value = true;
+    premiumSteps.value = 2;
+    showToast('Payment proof submitted — we will activate you once confirmed.', 'success');
+    await loadSubscriptionStatus();
+  } catch (e) {
+    subMessage.value = e.response?.data?.error || 'Could not submit payment request.';
+    subOk.value = false;
+    premiumSteps.value = 0;
+    showToast(subMessage.value, 'danger');
+  } finally {
+    subLoading.value = false;
+  }
+};
+
 const loadAdminDashboard = async () => {
   try {
     const [usersRes, statsRes, commentsRes, analyticsRes] = await Promise.all([
@@ -3702,8 +4381,10 @@ const loadAdminDashboard = async () => {
     movieViews.value = statsRes.data.topMovieViews || [];
     adminComments.value = commentsRes.data.comments || [];
     analytics.value = analyticsRes.data || null;
+    adminLastUpdated.value = new Date().toLocaleTimeString();
     await loadAdminSettings();
     await loadAdminSupport();
+    await loadAdminPayments();
   } catch (error) {
     console.error('Admin dashboard load error:', error);
     showToast('Could not load admin dashboard.', 'danger');
@@ -3712,7 +4393,7 @@ const loadAdminDashboard = async () => {
 
 const getTrailerEmbedUrl = (video) => {
   if (!video) return null;
-  if (video.site === 'YouTube') return `https://www.youtube.com/embed/${video.key}?autoplay=1&modestbranding=1&rel=0`;
+  if (video.site === 'YouTube') return `https://www.youtube-nocookie.com/embed/${video.key}?autoplay=1&modestbranding=1&rel=0&iv_load_policy=3&playsinline=1`;
   if (video.site === 'Vimeo') return `https://player.vimeo.com/video/${video.key}?autoplay=1`;
   if (video.site === 'Dailymotion') return `https://www.dailymotion.com/embed/video/${video.key}?autoplay=1`;
   return null;
@@ -3763,8 +4444,11 @@ const resolveEffectiveTheme = () => adminThemesPreview.value || currentTheme.val
 
 const changeTheme = () => {
   document.documentElement.setAttribute('data-theme', darkMode.value ? 'dark' : resolveEffectiveTheme());
-  currentTheme.value = resolveEffectiveTheme();
-  if (adminThemesPreview.value) localStorage.setItem('admin_theme_preview', adminThemesPreview.value);
+  if (adminThemesPreview.value) {
+    localStorage.setItem('admin_theme_preview', adminThemesPreview.value);
+  } else {
+    localStorage.removeItem('admin_theme_preview');
+  }
 };
 
 const chooseTheme = () => {
@@ -3787,11 +4471,13 @@ const userThemeName = computed(() => {
 });
 
 const previewSiteTheme = (themeId) => {
+  if (adminThemesPreview.value === themeId) return;
   adminThemesPreview.value = themeId;
   changeTheme();
 };
 
 const clearPreview = () => {
+  if (!adminThemesPreview.value) return;
   adminThemesPreview.value = '';
   localStorage.removeItem('admin_theme_preview');
   changeTheme();
@@ -3800,6 +4486,7 @@ const clearPreview = () => {
 const applySiteWideTheme = (themeId) => {
   adminSettings.value.siteTheme = themeId;
   currentTheme.value = themeId;
+  localStorage.setItem('theme', themeId);
   localStorage.removeItem('user_theme');
   changeTheme();
 };
@@ -3814,17 +4501,34 @@ const currentThemeName = computed(() => {
   return found ? found.name : id;
 });
 
+const previewThemeName = computed(() => {
+  const found = (adminSettings.value.availableThemes || SITE_THEMES).find(t => t.id === adminThemesPreview.value);
+  return found ? found.name : '';
+});
+
 const applyThemeToSite = async (t) => {
-  applySiteWideTheme(t.id);
+  if (!t || !t.id || t.id === adminSettings.value.siteTheme) return;
   adminSaving.value = true;
+  applyingThemeId.value = t.id;
   try {
-    await saveAdminSettings();
-    clearPreview();
+    await apiClient.put('/admin/settings', { siteTheme: t.id });
+    adminSettings.value.siteTheme = t.id;
+    siteTheme.value = t.id;
+    currentTheme.value = t.id;
+    userThemeChoice.value = '';
+    localStorage.setItem('theme', t.id);
+    localStorage.removeItem('user_theme');
+    adminThemesPreview.value = '';
+    localStorage.removeItem('admin_theme_preview');
+    changeTheme();
+    loadSiteSettings();
     showToast(`Theme "${t.name}" is now live for all users.`);
   } catch (e) {
-    showToast('Theme previewed but could not be saved.', 'danger');
+    console.error('Apply theme error:', e);
+    showToast('Theme could not be saved.', 'danger');
   } finally {
     adminSaving.value = false;
+    applyingThemeId.value = '';
   }
 };
 
@@ -3845,7 +4549,7 @@ const toggleChat = () => {
   if (isChatOpen.value && chatMessages.value.length === 0) {
     chatMessages.value.push({
       role: 'assistant',
-      content: 'Hello! I\'m your AI assistant. I can help with movie recommendations, answer questions about the app, or chat about anything. How can I assist you today?'
+      content: 'Hello! I\'m the AI assistant for ' + (siteSettings.siteName || 'Filmz') + '. I can recommend trending movies, show how to watch trailers or full movies, explain premium plans & payments, and help with YOUTMUS music. What can I do for you?'
     });
   }
 };
@@ -3857,6 +4561,7 @@ const sendMessage = async () => {
   chatMessages.value.push({ role: 'user', content: userMessage });
   chatInput.value = '';
   isChatLoading.value = true;
+  scrollChatToBottom();
 
   try {
     const response = await callGeminiAPI(userMessage);
@@ -3865,16 +4570,44 @@ const sendMessage = async () => {
     console.error('AI Chat error:', error);
     chatMessages.value.push({
       role: 'assistant',
-      content: 'Sorry, I encountered an error. Please try again later.'
+      content: 'Sorry, I hit a temporary glitch. Please try your question again in a moment.'
     });
   } finally {
     isChatLoading.value = false;
-    nextTick(() => {
-      if (chatMessagesRef.value) {
-        chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight;
-      }
-    });
+    scrollChatToBottom();
   }
+};
+
+const scrollChatToBottom = () => {
+  nextTick(() => {
+    if (chatMessagesRef.value) {
+      chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight;
+    }
+  });
+};
+
+// One-tap example questions for new visitors.
+const chatQuickChips = [
+  'What are the trending movies?',
+  'How do I get premium?',
+  'How can I watch a full movie?',
+  'How does YOUTMUS music work?'
+];
+
+const runQuickChip = (chip) => {
+  chatInput.value = chip;
+  sendMessage();
+};
+
+// Lightweight formatter for assistant replies: escapes HTML first, then turns
+// **bold** and - bullets / numbered lines into clean, readable chat markup.
+const formatAI = (text) => {
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return esc(String(text || ''))
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^(\s*)([-*])\s+(.+)$/gm, '$1<span class="ai-bullet">•</span> $3')
+    .replace(/^(\s*)(\d+)[.)]\s+(.+)$/gm, '$1<span class="ai-bullet">$2.</span> $3')
+    .replace(/\n{2,}/g, '\n\n');
 };
 
 const callGeminiAPI = async (message) => {
@@ -4962,9 +5695,29 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
   gap: .5rem;
   transition: transform .25s ease, box-shadow .25s ease;
 }
-.banner-btn.primary { background: linear-gradient(135deg, var(--primary), var(--accent2)); color: #001018; box-shadow: 0 14px 34px rgba(0,204,255,.35); }
-.banner-btn.ghost { background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.22); backdrop-filter: blur(8px); }
+.banner-btn.primary {
+  background: linear-gradient(135deg, var(--primary), var(--accent2));
+  color: #001018;
+  box-shadow: 0 14px 34px rgba(0,204,255,.35);
+  animation: bannerPulse 2.6s ease-in-out infinite;
+}
+.banner-btn.ghost {
+  background: rgba(255,255,255,.14);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.22);
+  backdrop-filter: blur(8px);
+  animation: ghostPulse 3.2s ease-in-out infinite;
+}
+@keyframes bannerPulse {
+  0%, 100% { box-shadow: 0 14px 34px rgba(0,204,255,.35), 0 0 0 0 rgba(0,204,255,.45); }
+  50% { box-shadow: 0 16px 40px rgba(0,204,255,.5), 0 0 0 8px rgba(0,204,255,0); }
+}
+@keyframes ghostPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,.22); }
+  50% { box-shadow: 0 0 0 5px rgba(255,255,255,0); }
+}
 .banner-btn:hover { transform: translateY(-3px) scale(1.03); }
+.banner-btn:hover { animation-play-state: paused; }
 .banner-btn.primary:hover { box-shadow: 0 18px 44px rgba(0,204,255,.5); }
 .banner-dots {
   position: absolute;
@@ -5054,30 +5807,45 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
   text-overflow: ellipsis;
 }
 .movie-card-info .mc-year { font-size: .72rem; color: rgba(255,255,255,.55); letter-spacing: .05em; }
-.mc-btns { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin-top: .55rem; }
+.mc-btns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .4rem; margin-top: .55rem; }
 .mc-btn {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: .35rem;
-  padding: .55rem .4rem;
+  gap: .3rem;
+  min-width: 0;
+  padding: .5rem .3rem;
   border: none;
   border-radius: 10px;
-  font-size: .72rem;
+  font-size: .7rem;
   font-weight: 800;
-  letter-spacing: .03em;
+  letter-spacing: .02em;
+  line-height: 1.15;
+  text-align: center;
   cursor: pointer;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   transition: transform .2s ease, box-shadow .2s ease, filter .2s ease;
 }
-.mc-trailer { background: linear-gradient(135deg, #e11d48, #ff7a00); color: #fff; box-shadow: 0 6px 16px rgba(225,29,72,.35); }
-.mc-watch { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; box-shadow: 0 6px 16px rgba(34,197,94,.35); }
-.mc-btn:hover { transform: translateY(-2px); filter: brightness(1.12); }
+.mc-btn .app-icon { flex-shrink: 0; }
+.mc-trailer { background: linear-gradient(135deg, #e11d48, #ff7a00); color: #fff; box-shadow: 0 6px 16px rgba(225,29,72,.35); animation: trailerPulse 2.8s ease-in-out infinite; }
+.mc-watch { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; box-shadow: 0 6px 16px rgba(34,197,94,.35); animation: watchPulse 2.8s ease-in-out infinite; }
+@keyframes trailerPulse {
+  0%, 100% { box-shadow: 0 6px 16px rgba(225,29,72,.35), 0 0 0 0 rgba(225,29,72,.4); }
+  50% { box-shadow: 0 8px 20px rgba(225,29,72,.5), 0 0 0 6px rgba(225,29,72,0); }
+}
+@keyframes watchPulse {
+  0%, 100% { box-shadow: 0 6px 16px rgba(34,197,94,.35), 0 0 0 0 rgba(34,197,94,.4); }
+  50% { box-shadow: 0 8px 20px rgba(34,197,94,.5), 0 0 0 6px rgba(34,197,94,0); }
+}
+.mc-btn:hover { transform: translateY(-2px); filter: brightness(1.12); animation-play-state: paused; }
 .mc-trailer:hover { box-shadow: 0 10px 22px rgba(225,29,72,.5); }
 .mc-watch:hover { box-shadow: 0 10px 22px rgba(34,197,94,.5); }
+.mc-btn:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
 .movie-card:hover .poster-box img { filter: brightness(.85); }
 @media (max-width: 420px) {
-  .mc-btn { font-size: .62rem; padding: .5rem .2rem; }
+  .mc-btns { grid-template-columns: 1fr; }
+  .mc-btn { font-size: .72rem; padding: .55rem .5rem; }
 }
 .search-section { max-width: 1400px; margin: 0 auto 1rem; }
 .search-container { display: grid; gap: 1rem; }
@@ -5296,6 +6064,7 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
   justify-content: space-between;
   gap: 1rem;
   align-items: center;
+  flex-wrap: wrap;
   padding: 1rem;
   margin-bottom: 1rem;
 }
@@ -5343,8 +6112,24 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
   color: #001018;
   box-shadow: 0 8px 20px rgba(0,204,255,.25);
 }
-.video-wrapper { position: relative; aspect-ratio: 16 / 9; width: 100%; overflow: hidden; border-radius: 24px; box-shadow: 0 20px 50px rgba(0,0,0,.5); }
-.trailer-iframe { width: 100%; height: 100%; }
+.video-wrapper { position: relative; aspect-ratio: 16 / 9; width: 100%; overflow: hidden; border-radius: 24px; background: #000; box-shadow: 0 20px 50px rgba(0,0,0,.5); }
+.trailer-iframe { position: relative; z-index: 1; width: 100%; height: 100%; border: 0; display: block; }
+.player-loader {
+  position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: .75rem; color: rgba(255,255,255,.75);
+  background: radial-gradient(ellipse at center, #111430 0%, #05060f 70%), #05060f;
+  font-size: .9rem; letter-spacing: .02em;
+}
+.player-loader .app-icon { color: var(--primary); }
+.player-hint {
+  margin: .6rem 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  color: rgba(255,255,255,.55);
+  font-size: .78rem;
+}
+.player-hint strong { color: var(--primary); }
 .comment-section {
   margin-top: 1rem;
   padding: 1.2rem;
@@ -5410,37 +6195,75 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
 .youtmus-chips .chip:hover { border-color: rgba(179,136,255,.5); color: #b388ff; }
 .youtmus-chips .chip.active { background: linear-gradient(135deg, #b388ff, #7c4dff); color: #fff; border-color: transparent; }
 .youtmus-error {
-  display: flex; align-items: center; gap: .5rem; padding: .8rem 1rem; margin-bottom: 1rem;
+  display: flex; align-items: center; gap: .6rem; padding: .8rem 1rem; margin-bottom: 1rem;
   border-radius: 12px; background: rgba(255,99,132,.15); border: 1px solid rgba(255,99,132,.4);
-  color: #ff6b81; cursor: pointer; font-size: .9rem;
+  color: #ff6b81; font-size: .9rem;
 }
+.youtmus-error span { flex: 1; }
+.yt-error-retry {
+  display: inline-flex; align-items: center; gap: .35rem; padding: .4rem .8rem; border-radius: 999px;
+  border: 1px solid rgba(255,107,129,.5); background: rgba(255,99,132,.18); color: #ffb3bd;
+  font-weight: 700; font-size: .8rem; cursor: pointer; transition: all .18s ease;
+}
+.yt-error-retry:hover { background: rgba(255,99,132,.35); color: #fff; }
+.yt-error-dismiss {
+  display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%;
+  border: none; background: rgba(255,255,255,.1); color: rgba(255,255,255,.7); cursor: pointer;
+}
+.yt-error-dismiss:hover { background: rgba(255,255,255,.2); color: #fff; }
 .youtmus-loading { display: flex; align-items: center; justify-content: center; gap: .6rem; padding: 3rem 0; color: rgba(255,255,255,.6); font-size: 1.05rem; }
+.yt-load-bars { display: inline-flex; align-items: flex-end; gap: 4px; height: 22px; }
+.yt-load-bars span {
+  width: 5px; border-radius: 3px;
+  background: linear-gradient(180deg, #b388ff, #7c4dff);
+  animation: ytBar 1s ease-in-out infinite;
+}
+.yt-load-bars span:nth-child(2) { animation-delay: .12s; }
+.yt-load-bars span:nth-child(3) { animation-delay: .24s; }
+.yt-load-bars span:nth-child(4) { animation-delay: .36s; }
+.yt-load-bars span:nth-child(5) { animation-delay: .48s; }
+@keyframes ytBar { 0%, 100% { height: 6px; } 50% { height: 22px; } }
 .youtmus-results-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .youtmus-results-head h3 { display: flex; align-items: center; gap: .5rem; margin: 0; color: #fff; cursor: pointer; }
 .youtmus-results-head h3:hover { color: #b388ff; }
 .yt-count { color: rgba(255,255,255,.5); font-size: .85rem; }
 .youtmus-empty { display: flex; flex-direction: column; align-items: center; gap: .8rem; padding: 3rem 1rem; color: rgba(255,255,255,.55); text-align: center; }
-.youtmus-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1.1rem; }
+.youtmus-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(205px, 1fr)); gap: 1.1rem; }
+@keyframes ytCardIn { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.yt-card { animation: ytCardIn .45s ease backwards; }
 .yt-card {
-  display: flex; flex-direction: column; text-align: left; border-radius: 14px; overflow: hidden;
+  position: relative; display: flex; flex-direction: column; text-align: left; border-radius: 16px; overflow: hidden;
   background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); cursor: pointer;
-  transition: transform .2s ease, border-color .2s ease, background .2s ease;
+  box-shadow: 0 10px 26px rgba(0,0,0,.22);
+  transition: transform .2s ease, border-color .2s ease, background .2s ease, box-shadow .2s ease;
 }
-.yt-card:hover { transform: translateY(-3px); border-color: rgba(179,136,255,.55); background: rgba(255,255,255,.09); }
-.yt-thumb { position: relative; padding-top: 56.25%; background: #000; }
-.yt-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.yt-card:hover { transform: translateY(-4px); border-color: rgba(179,136,255,.6); background: rgba(255,255,255,.1); box-shadow: 0 16px 34px rgba(124,77,255,.22); }
+.yt-thumb { position: relative; padding-top: 56.25%; background: #000; overflow: hidden; }
+.yt-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; }
+.yt-card:hover .yt-thumb img { transform: scale(1.07); }
 .yt-dur {
-  position: absolute; right: .45rem; bottom: .45rem; padding: .15rem .45rem; border-radius: 6px;
-  background: rgba(0,0,0,.8); color: #fff; font-size: .8rem; font-weight: 600; letter-spacing: .02em;
+  position: absolute; right: .45rem; bottom: .45rem; padding: .15rem .5rem; border-radius: 7px;
+  background: rgba(0,0,0,.82); color: #fff; font-size: .8rem; font-weight: 600; letter-spacing: .02em;
+  backdrop-filter: blur(3px);
 }
 .yt-play {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: rgba(0,0,0,.25); color: #fff; opacity: 0; transition: opacity .2s ease;
+  position: absolute; right: .6rem; bottom: .6rem; z-index: 3;
+  width: 42px; height: 42px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #b388ff, #7c4dff); color: #fff;
+  box-shadow: 0 8px 20px rgba(124,77,255,.55);
+  opacity: .94; transform: scale(1);
+  transition: opacity .22s ease, transform .22s ease, box-shadow .22s ease;
 }
-.yt-card:hover .yt-play { opacity: 1; }
+.yt-card:hover .yt-play { opacity: 1; transform: scale(1.1); box-shadow: 0 12px 26px rgba(124,77,255,.7); }
+.yt-card.playing .yt-play {
+  opacity: 1; transform: translateY(0) scale(1);
+  background: linear-gradient(135deg, var(--accent2), #16a34a);
+  box-shadow: 0 8px 20px rgba(0,255,136,.5);
+}
 .yt-play .app-icon { filter: drop-shadow(0 0 8px rgba(179,136,255,.9)); }
-.yt-info { padding: .7rem .8rem .8rem; }
-.yt-title { margin: 0 0 .3rem; font-size: .93rem; font-weight: 600; color: #fff; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.yt-info { padding: .75rem .85rem .85rem; }
+.yt-title { margin: 0 0 .3rem; font-size: .95rem; font-weight: 600; color: #fff; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .yt-sub { margin: .15rem 0 0; font-size: .8rem; color: rgba(255,255,255,.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .youtmus-player { display: flex; flex-direction: column; gap: 1rem; }
 .yt-player-top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
@@ -6488,6 +7311,64 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
   margin-top: 0.5rem;
 }
 
+/* Global Dark-Mode admin control */
+.admin-dark-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .9rem;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid rgba(255,209,102,.22);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255,209,102,.07), rgba(255,123,84,.04) 60%, rgba(42,255,155,.04));
+}
+.admin-dark-label {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  color: #ffd166 !important;
+  font-weight: 800;
+  font-size: .92rem !important;
+}
+.admin-dark-row > *:not(.switch) { width: auto; }
+.admin-dark-desc { flex: 1 1 240px; min-width: 220px; color: rgba(255,255,255,.55) !important; font-size: .8rem !important; line-height: 1.45; }
+.admin-dark-live {
+  margin-top: .7rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  color: #2aff9b;
+  font-size: .78rem;
+  background: rgba(42,255,155,.08);
+  border: 1px solid rgba(42,255,155,.28);
+  border-radius: 999px;
+  padding: .4rem .85rem;
+}
+.admin-dark-live strong { color: #fff; }
+
+.admin-console-dark {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.16);
+  color: rgba(255,255,255,.85);
+  font-size: .74rem;
+  font-weight: 800;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: .42rem .9rem;
+  transition: all .18s ease;
+}
+.admin-console-dark em { font-style: normal; font-weight: 500; color: rgba(255,255,255,.5); }
+.admin-console-dark.on {
+  background: rgba(255,209,102,.16);
+  border-color: rgba(255,209,102,.5);
+  color: #ffd166;
+  box-shadow: 0 0 18px rgba(255,209,102,.18);
+}
+.admin-console-dark.on em { color: rgba(255,209,102,.65); }
+
 .admin-saved-tick { color: #2aff9b; font-weight: 600; }
 
 .admin-comments { display: grid; gap: 0.75rem; }
@@ -6656,17 +7537,36 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
 }
 
 .chat-header {
-  padding: 1rem;
+  padding: .9rem 1rem;
   border-bottom: 1px solid rgba(255,255,255,.1);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  background: rgba(255,255,255,.04);
 }
+
+.chat-head-txt { display: grid; gap: .15rem; }
 
 .chat-header h3 {
   margin: 0;
   color: #fff;
   font-size: 1.1rem;
+}
+
+.chat-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  color: rgba(255,255,255,.55);
+  font-size: .7rem;
+  letter-spacing: .02em;
+}
+.chat-sub b { color: rgba(255,255,255,.3); font-weight: 500; }
+.chat-sub .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #2aff9b;
+  box-shadow: 0 0 8px #2aff9b;
+  animation: livePulse 1.4s ease-in-out infinite;
 }
 
 .chat-close {
@@ -6714,7 +7614,9 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
   padding: 0.75rem 1rem;
   border-radius: 18px;
   font-size: 0.9rem;
-  line-height: 1.4;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .chat-message.user .message-content {
@@ -6723,9 +7625,58 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
 }
 
 .chat-message.assistant .message-content {
-  background: rgba(255,255,255,.1);
+  background: linear-gradient(135deg, rgba(30,40,80,.55), rgba(20,25,55,.65));
+  color: #f2f5ff;
+  border: 1px solid rgba(120,150,255,.22);
+  box-shadow: 0 4px 18px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.05);
+}
+
+.chat-message.assistant .message-content strong { color: #7fe7ff; font-weight: 800; }
+.chat-message.assistant .message-content .ai-bullet { color: #7fe7ff; font-weight: 800; margin-right: .3rem; }
+
+.typing-dots {
+  display: inline-flex;
+  gap: 5px;
+  padding: .85rem 1.1rem;
+  border-radius: 18px;
+  background: rgba(30,40,80,.55);
+  border: 1px solid rgba(120,150,255,.22);
+}
+.typing-dots span {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #7fe7ff;
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+.typing-dots span:nth-child(2) { animation-delay: .15s; }
+.typing-dots span:nth-child(3) { animation-delay: .3s; }
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: .4; }
+  30% { transform: translateY(-6px); opacity: 1; }
+}
+
+.chat-quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+  padding: 0 1rem 0.6rem;
+  border-top: 1px dashed rgba(255,255,255,.1);
+}
+.chat-quick-chips .chip {
+  background: rgba(0,204,255,.1);
+  border: 1px solid rgba(0,204,255,.35);
+  color: #9fe9ff;
+  font-size: .72rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: .38rem .8rem;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+.chat-quick-chips .chip:hover {
+  background: rgba(0,204,255,.2);
   color: #fff;
-  border: 1px solid rgba(255,255,255,.1);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0,204,255,.25);
 }
 
 .chat-input-area {
@@ -7525,17 +8476,25 @@ body { margin: 0; padding: 0; overflow-x: hidden; }
 
 /* ---------- Admin Themes tab ---------- */
 .admin-toolbar-title { display: inline-flex; align-items: center; gap: .45rem; font-weight: 700; color: var(--accent2); }
-.theme-preview-note { display: inline-flex; align-items: center; gap: .4rem; padding: .5rem .9rem; border-radius: 10px; margin: 0 0 1.1rem; font-size: .84rem; border: 1px dashed rgba(255,209,102,.5); background: rgba(255,209,102,.08); color: rgba(255,255,255,.85); }
+.theme-preview-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; margin-bottom: 1.1rem; }
+.theme-preview-note { display: inline-flex; align-items: center; gap: .4rem; padding: .5rem .9rem; border-radius: 10px; margin: 0; font-size: .84rem; border: 1px dashed rgba(255,209,102,.5); background: rgba(255,209,102,.08); color: rgba(255,255,255,.85); }
 .theme-preview-note .app-icon { color: #ffd166; }
+.theme-live-preview { display: inline-flex; align-items: center; gap: .4rem; padding: .45rem .85rem; border-radius: 999px; font-size: .8rem; font-weight: 700; color: #ffd166; background: rgba(255,209,102,.14); border: 1px solid rgba(255,209,102,.45); animation: themePreviewPulse 1.6s ease-in-out infinite; }
+.theme-live-preview strong { color: #fff; }
+@keyframes themePreviewPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,209,102,.35); } 50% { box-shadow: 0 0 0 7px rgba(255,209,102,0); } }
+.theme-preview-badge { position: absolute; top: .55rem; left: .6rem; display: inline-flex; align-items: center; gap: .25rem; padding: .18rem .45rem; border-radius: 999px; background: rgba(255,209,102,.92); color: #231a06; font-size: .58rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
 .admin-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 1rem; }
 .admin-theme-card {
+  position: relative;
   border-radius: 16px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04);
   overflow: hidden; cursor: pointer; display: grid; gap: .7rem; padding-bottom: .8rem;
   transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+  outline: none;
 }
 .admin-theme-card:hover { transform: translateY(-3px); border-color: rgba(255,255,255,.3); }
+.admin-theme-card:focus-visible { border-color: var(--accent2); box-shadow: 0 0 0 3px rgba(0,255,136,.3); }
 .admin-theme-card.active { border-color: var(--accent2); box-shadow: 0 0 0 1px var(--accent2), 0 12px 30px rgba(0,255,136,.12); }
-.admin-theme-card.previewing { border-color: #ffd166; box-shadow: 0 0 0 1px #ffd166, 0 12px 30px rgba(255,209,102,.16); }
+.admin-theme-card.previewing { border-color: #ffd166; box-shadow: 0 0 0 1px #ffd166, 0 12px 30px rgba(255,209,102,.16); transform: translateY(-3px); }
 .theme-card-preview { position: relative; height: 92px; display: flex; align-items: center; gap: .4rem; padding: 0 .9rem; overflow: hidden; }
 .theme-card-dot { width: 30px; height: 30px; border-radius: 50%; background: rgba(255,255,255,.9); box-shadow: 0 0 0 4px rgba(255,255,255,.2); flex-shrink: 0; }
 .theme-card-line { height: 7px; width: 70px; border-radius: 99px; background: rgba(255,255,255,.5); }
@@ -7693,6 +8652,534 @@ html[data-admin="on"] .movie-view-item { border-color: rgba(255,209,102,.14); }
   .dots-panel { min-width: calc(100vw - 2rem); right: 1rem; }
   .theme-swatch-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
   .lang-picker { flex-direction: column; }
+}
+
+/* ===================== Professional Admin Console ===================== */
+.admin-panel {
+  padding: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(1100px 480px at 18% -10%, rgba(0,204,255,.10), transparent 60%),
+    radial-gradient(900px 520px at 105% 115%, rgba(255,0,68,.08), transparent 55%),
+    rgba(9,11,26,.78);
+  border-color: rgba(255,255,255,.14);
+  box-shadow: 0 30px 90px rgba(0,0,0,.5);
+}
+
+.admin-layout {
+  display: grid;
+  grid-template-columns: 254px 1fr;
+  min-height: 560px;
+}
+
+.admin-sidebar {
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+  border-right: 1px solid rgba(255,255,255,.1);
+  padding: 1.3rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.admin-brand { display: flex; align-items: center; gap: .7rem; padding: .2rem .4rem; }
+.admin-brand-icon {
+  width: 42px; height: 42px; border-radius: 13px; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--primary), var(--accent2));
+  display: grid; place-items: center; color: #00131c;
+  box-shadow: 0 10px 24px rgba(0,204,255,.35);
+  animation: pulseGlow 2.6s ease-in-out infinite;
+}
+.admin-brand strong { display: block; color: #fff; font-size: .98rem; letter-spacing: .02em; }
+.admin-brand small { color: rgba(255,255,255,.5); font-size: .72rem; }
+
+.admin-nav { display: flex; flex-direction: column; gap: .25rem; }
+.admin-nav-label {
+  font-size: .64rem; text-transform: uppercase; letter-spacing: .13em;
+  color: rgba(255,255,255,.4); margin: .95rem .4rem .3rem; font-weight: 700;
+}
+.admin-nav-item {
+  display: flex; align-items: center; gap: .6rem; width: 100%;
+  padding: .62rem .75rem; border-radius: 12px; border: 1px solid transparent;
+  background: transparent; color: rgba(255,255,255,.72); cursor: pointer;
+  font-size: .88rem; font-weight: 500; transition: all .18s ease; text-align: left;
+}
+.admin-nav-item .app-icon { color: rgba(255,255,255,.65); transition: color .18s ease; }
+.admin-nav-item:hover { background: rgba(0,204,255,.09); color: #fff; }
+.admin-nav-item:hover .app-icon { color: var(--primary); }
+.admin-nav-item.active {
+  background: linear-gradient(135deg, rgba(0,204,255,.2), rgba(0,255,136,.1));
+  border-color: rgba(0,204,255,.38); color: #fff; font-weight: 600;
+  box-shadow: 0 8px 26px rgba(0,204,255,.14);
+}
+.admin-nav-item.active .app-icon { color: var(--primary); }
+.admin-nav-item span { flex: 1; }
+.nav-count {
+  font-style: normal; font-size: .68rem; font-weight: 700;
+  background: rgba(255,255,255,.12); border-radius: 999px;
+  min-width: 20px; text-align: center; padding: .12rem .4rem; color: rgba(255,255,255,.85);
+}
+.nav-count.warn { background: rgba(255,65,108,.32); color: #ff7094; animation: pulseGlow 2s ease-in-out infinite; }
+
+.admin-sidebar-foot { margin-top: auto; padding-top: .6rem; border-top: 1px solid rgba(255,255,255,.08); display: grid; gap: .6rem; }
+.admin-session { display: flex; align-items: center; gap: .6rem; padding: .2rem .3rem; }
+.admin-session strong { display: block; color: #fff; font-size: .8rem; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-session small { color: rgba(255,255,255,.45); font-size: .68rem; }
+.admin-sidebar-exit {
+  display: inline-flex; align-items: center; gap: .4rem; justify-content: center;
+  padding: .55rem .75rem; border-radius: 10px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05);
+  color: rgba(255,255,255,.85); font-size: .8rem; transition: all .18s ease;
+}
+.admin-sidebar-exit:hover { background: rgba(255,255,255,.1); }
+
+.admin-content { padding: 1.5rem 1.75rem; min-width: 0; }
+.admin-content-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  flex-wrap: wrap; padding-bottom: 1.25rem; margin-bottom: 1.4rem;
+  border-bottom: 1px solid rgba(255,255,255,.1);
+}
+.admin-content-head h2 { margin: 0 0 .25rem; font-size: 1.4rem; display: flex; align-items: center; gap: .55rem; }
+.admin-content-head h2 .app-icon { color: var(--primary); }
+.admin-content-head p { margin: 0; color: rgba(255,255,255,.55); font-size: .86rem; }
+
+.admin-toolbar-title { display: inline-flex; align-items: center; gap: .4rem; }
+
+/* Users grid */
+.admin-user-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 1rem;
+}
+.admin-user-card {
+  display: flex; flex-direction: column; gap: .7rem; cursor: pointer;
+  padding: 1.15rem; border-radius: 18px; margin: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.02));
+  border: 1px solid rgba(255,255,255,.1);
+  transition: transform .22s ease, border-color .22s ease, box-shadow .22s ease, background .22s ease;
+  animation: fadeUp .45s cubic-bezier(.22,.8,.36,1) both;
+  position: relative;
+}
+.admin-user-card:hover {
+  transform: translateY(-5px);
+  border-color: rgba(0,204,255,.4);
+  box-shadow: 0 18px 46px rgba(0,204,255,.16);
+  background: linear-gradient(180deg, rgba(0,204,255,.1), rgba(255,255,255,.03));
+}
+.admin-user-card.is-admin { border-color: rgba(255,215,0,.25); }
+.admin-user-avatar-wrap { position: relative; width: max-content; }
+.admin-user-avatar-wrap .admin-avatar { width: 56px; height: 56px; font-size: 1.3rem; border-radius: 16px; }
+.admin-fallback-tag {
+  position: absolute; bottom: -6px; left: 50%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: .25rem; white-space: nowrap;
+  font-size: .6rem; font-weight: 700; letter-spacing: .02em;
+  background: rgba(255,215,0,.18); color: #ffd700; border: 1px solid rgba(255,215,0,.4);
+  border-radius: 999px; padding: .1rem .4rem;
+}
+.admin-user-meta { display: flex; flex-direction: column; gap: .12rem; min-width: 0; }
+.admin-user-meta strong { color: #fff; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.admin-user-email { color: rgba(255,255,255,.55) !important; font-size: .78rem !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.admin-user-extra { display: inline-flex !important; align-items: center; gap: .3rem; color: rgba(255,255,255,.5) !important; font-size: .76rem !important; }
+.admin-user-badges { display: flex; gap: .35rem; flex-wrap: wrap; }
+.admin-user-sub { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; }
+.admin-user-foot {
+  display: flex; justify-content: space-between; align-items: center; gap: .5rem;
+  padding-top: .65rem; border-top: 1px solid rgba(255,255,255,.08);
+  margin-top: auto;
+}
+.admin-open {
+  display: inline-flex; align-items: center; gap: .2rem;
+  color: var(--primary); font-weight: 700; font-size: .78rem;
+}
+.chip-sub { text-transform: none; }
+
+/* User detail modal */
+.admin-user-modal { max-width: 580px; width: 92%; padding: 1.8rem; max-height: 86vh; overflow-y: auto; position: relative; }
+.modal-x {
+  position: absolute; top: 1rem; right: 1rem; border: none;
+  background: rgba(255,255,255,.08); color: #fff; width: 34px; height: 34px;
+  border-radius: 10px; cursor: pointer; display: grid; place-items: center; transition: all .18s ease;
+}
+.modal-x:hover { background: rgba(255,255,255,.16); transform: rotate(90deg); }
+.modal-x .app-icon { margin: 0; }
+.aum-head { display: flex; gap: 1rem; align-items: center; margin-bottom: 1.2rem; }
+.admin-avatar.lg { width: 66px; height: 66px; font-size: 1.6rem; border-radius: 20px; flex-shrink: 0; }
+.admin-avatar.mini { width: 32px; height: 32px; font-size: .9rem; border-radius: 50%; flex-shrink: 0; }
+.aum-title { min-width: 0; }
+.aum-title h3 { margin: 0; font-size: 1.25rem; color: #fff; }
+.aum-title p { margin: .18rem 0 .55rem; color: rgba(255,255,255,.6); font-size: .86rem; }
+.aum-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
+.aum-info { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09); border-radius: 12px; padding: .7rem .85rem; }
+.aum-info span { display: flex; align-items: center; gap: .32rem; color: rgba(255,255,255,.48); font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .2rem; }
+.aum-info strong { color: #fff; font-size: .9rem; word-break: break-word; }
+.aum-bio { color: rgba(255,255,255,.75); font-size: .88rem; margin: 1rem 0 0; font-style: italic; }
+.aum-fallback {
+  display: flex; gap: .4rem; align-items: flex-start; margin: .9rem 0 0;
+  padding: .6rem .75rem; border-radius: 10px; background: rgba(255,215,0,.09);
+  border: 1px solid rgba(255,215,0,.28); color: #ffd700; font-size: .78rem;
+}
+.aum-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,.1); }
+
+/* Payments */
+.admin-pay-filters { display: flex; gap: .45rem; flex-wrap: wrap; }
+.admin-filter {
+  border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05);
+  color: rgba(255,255,255,.85); border-radius: 999px; padding: .45rem .85rem;
+  font-size: .8rem; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem;
+  transition: all .18s ease;
+}
+.admin-filter:hover { border-color: rgba(0,204,255,.45); }
+.admin-filter.active { background: linear-gradient(135deg, var(--primary), var(--accent2)); color: #00131c; border-color: transparent; font-weight: 700; }
+.admin-filter em { font-style: normal; font-size: .72rem; background: rgba(0,0,0,.25); border-radius: 999px; padding: .04rem .42rem; }
+.admin-filter em.warn { background: rgba(255,65,108,.35); color: #ff7094; }
+.admin-grant-box {
+  background: linear-gradient(180deg, rgba(0,204,255,.08), rgba(255,255,255,.02));
+  border: 1px dashed rgba(0,204,255,.32); padding: 1.1rem 1.25rem; border-radius: 18px;
+}
+.admin-grant-box h3 { margin: 0 0 .2rem; font-size: 1rem; }
+.admin-grant-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .9rem; align-items: end; margin-top: .8rem; }
+.admin-grant-form select { color-scheme: dark; }
+.admin-grant-form select option { background: #0d0f24; color: #fff; }
+.admin-grant-form .admin-field span { color: rgba(255,255,255,.6); font-size: .78rem; }
+.admin-check { display: flex; align-items: center; gap: .4rem; color: rgba(255,255,255,.85); font-size: .85rem; cursor: pointer; padding-bottom: .5rem; }
+.admin-check input { accent-color: var(--primary); }
+.admin-payments { display: grid; gap: .9rem; margin-top: 1.2rem; }
+.admin-payment {
+  padding: 1.1rem 1.2rem; border-radius: 18px;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+  display: grid; gap: .8rem; animation: fadeUp .4s ease both;
+}
+.admin-payment.pending { border-color: rgba(0,204,255,.38); background: linear-gradient(180deg, rgba(0,204,255,.09), rgba(255,255,255,.02)); }
+.admin-payment.approved { border-color: rgba(0,255,136,.32); }
+.admin-payment.rejected { opacity: .72; border-color: rgba(255,65,108,.32); }
+.admin-payment-head { display: flex; justify-content: space-between; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.admin-payment-user { display: flex; align-items: center; gap: .6rem; min-width: 0; }
+.admin-payment-user strong { display: block; color: #fff; font-size: .9rem; }
+.admin-payment-user span { color: rgba(255,255,255,.55); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.admin-payment-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .45rem .9rem; font-size: .82rem; color: rgba(255,255,255,.72); }
+.admin-payment-amount { font-size: 1.2rem; font-weight: 800; color: var(--primary); }
+.admin-payment-amount small { font-weight: 500; font-size: .75rem; color: rgba(255,255,255,.5); text-transform: uppercase; }
+.admin-payment-meta { display: inline-flex; align-items: center; gap: .3rem; }
+.admin-payment-msg { grid-column: 1 / -1; margin: 0; color: rgba(255,255,255,.72); font-style: italic; font-size: .82rem; }
+.admin-payment-note { grid-column: 1 / -1; margin: 0; color: #ffd700; font-size: .78rem; display: flex; gap: .3rem; align-items: center; }
+.admin-action.ok { border-color: rgba(0,255,136,.42); color: #2aff9b; background: rgba(0,255,136,.08); }
+.admin-action.ok:hover { background: rgba(0,255,136,.18); }
+.admin-mobile-back { display: none; }
+
+/* ===================== Distinct Command-Center (admin vs users) ===================== */
+.admin-mode-bar {
+  display: flex; align-items: center; gap: .7rem; flex-wrap: wrap;
+  width: 100%; padding: .35rem 0;
+}
+.adm-live {
+  display: inline-flex; align-items: center; gap: .45rem;
+  font-size: .66rem; font-weight: 800; letter-spacing: .14em;
+  color: #ffd166; background: rgba(255,209,102,.1);
+  border: 1px solid rgba(255,209,102,.4); border-radius: 999px; padding: .28rem .7rem;
+  text-transform: uppercase;
+}
+.adm-title {
+  display: inline-flex; align-items: center; gap: .45rem;
+  color: #fff; font-weight: 700; font-size: .92rem;
+}
+.adm-title .app-icon { color: #ffd166; }
+.adm-user {
+  display: inline-flex; align-items: center; gap: .35rem;
+  color: rgba(255,255,255,.7); font-size: .8rem;
+  border-left: 1px solid rgba(255,255,255,.14); padding-left: .7rem;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.adm-exit {
+  margin-left: auto; display: inline-flex; align-items: center; gap: .35rem;
+  background: rgba(255,65,108,.14); border: 1px solid rgba(255,65,108,.4);
+  color: #ff7094; font-size: .76rem; font-weight: 700; border-radius: 999px;
+  padding: .4rem .8rem; cursor: pointer; transition: all .18s ease;
+}
+.adm-exit:hover { background: rgba(255,65,108,.26); color: #fff; }
+
+/* Whole-page "Command Center" treatment while the admin panel is open */
+.admin-page-active .space-bg { opacity: .16; filter: saturate(.45) brightness(.55); }
+.admin-page-active .space-bg .plasma { opacity: .08; }
+html[data-admin="on"] body { background: #060810; }
+.admin-page-active {
+  background:
+    radial-gradient(1100px 500px at 82% -12%, rgba(255,209,102,.08), transparent 55%),
+    radial-gradient(900px 520px at 4% 112%, rgba(255,123,84,.07), transparent 55%),
+    linear-gradient(180deg, #0a0c17 0%, #06070f 100%) !important;
+}
+.admin-page-active .main-header {
+  background: linear-gradient(180deg, rgba(14,16,26,.97), rgba(9,10,18,.94));
+  border-bottom: 1px solid rgba(255,209,102,.22);
+  box-shadow: 0 8px 40px rgba(0,0,0,.35);
+}
+.admin-page-active .logo-group .chameleon-name { color: #ffd166; text-shadow: 0 0 24px rgba(255,209,102,.35); }
+.admin-page-active .scroll-progress { background: linear-gradient(90deg, #ffd166, #f4a261); }
+.admin-page-active .home-fab,
+.admin-page-active .ai-chat-widget,
+.admin-page-active .app-footer,
+.admin-page-active .back-to-top { display: none !important; }
+
+/* Console strip (top of admin panel) */
+.admin-console-strip {
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  padding: .75rem 1.4rem;
+  background: linear-gradient(90deg, rgba(255,209,102,.12), rgba(255,123,84,.05) 55%, transparent);
+  border-bottom: 1px solid rgba(255,209,102,.16);
+}
+.admin-console-chip {
+  display: inline-flex; align-items: center; gap: .5rem;
+  font-size: .66rem; font-weight: 800; letter-spacing: .16em;
+  color: #ffd166; border: 1px solid rgba(255,209,102,.45); border-radius: 999px;
+  background: rgba(255,209,102,.12); padding: .3rem .75rem; text-transform: uppercase;
+}
+.admin-console-chip .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #2aff9b; box-shadow: 0 0 10px #2aff9b; animation: livePulse 1.4s ease-in-out infinite; }
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.admin-console-name {
+  display: inline-flex; align-items: center; gap: .4rem;
+  color: rgba(255,255,255,.85); font-size: .82rem; font-weight: 700;
+}
+.admin-console-name .app-icon { color: #ffd166; }
+.admin-console-time {
+  display: inline-flex; align-items: center; gap: .35rem;
+  color: rgba(255,255,255,.5); font-size: .74rem;
+}
+.admin-console-exit {
+  margin-left: auto; display: inline-flex; align-items: center; gap: .35rem;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.16);
+  color: rgba(255,255,255,.85); font-size: .76rem; font-weight: 700; cursor: pointer;
+  border-radius: 999px; padding: .4rem .85rem; transition: all .18s ease;
+}
+.admin-console-exit:hover { background: rgba(255,209,102,.16); border-color: rgba(255,209,102,.4); color: #ffd166; }
+
+/* Admin toolbar search */
+.admin-toolbar-search { position: relative; flex: 1; min-width: 220px; }
+.admin-toolbar-search-ic {
+  position: absolute; right: .85rem; top: 50%; transform: translateY(-50%);
+  color: rgba(255,209,102,.7); pointer-events: none;
+}
+.admin-comment-tools { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+
+/* Confirm dialog */
+.admin-confirm-overlay { z-index: 3000; display: grid; place-items: center; }
+.admin-confirm { max-width: 400px; width: 92%; padding: 1.6rem; text-align: center; }
+.admin-confirm .admin-confirm-ic {
+  width: 54px; height: 54px; margin: 0 auto 1rem;
+  border-radius: 16px; display: grid; place-items: center;
+  background: rgba(255,65,108,.16); border: 1px solid rgba(255,65,108,.4);
+  color: #ff7094; box-shadow: 0 0 30px rgba(255,65,108,.25);
+}
+.admin-confirm-title { color: #fff; font-size: 1.15rem; margin: 0 0 .5rem; }
+.admin-confirm-msg { color: rgba(255,255,255,.7); font-size: .88rem; line-height: 1.5; margin: 0 0 1.3rem; }
+.admin-confirm-actions { display: flex; justify-content: center; gap: .6rem; }
+
+@media (max-width: 720px) {
+  .adm-user { display: none; }
+  .admin-console-time { display: none; }
+  .admin-console-exit { margin-left: 0; }
+}
+
+@media (max-width: 920px) {
+  .admin-layout { grid-template-columns: 1fr; }
+  .admin-sidebar {
+    border-right: 0; border-bottom: 1px solid rgba(255,255,255,.1);
+    flex-direction: row; align-items: center; gap: .9rem; flex-wrap: wrap; padding: .9rem 1rem;
+  }
+  .admin-nav { flex-direction: row; flex-wrap: wrap; gap: .3rem; }
+  .admin-nav-label { display: none; }
+  .admin-nav-item { width: auto; padding: .5rem .7rem; }
+  .admin-sidebar-foot { border: 0; padding: 0; display: contents; }
+  .admin-session, .admin-sidebar-exit { display: none; }
+  .admin-content { padding: 1.25rem 1rem; }
+  .admin-mobile-back { display: inline-flex; align-self: flex-start; }
+  .aum-grid { grid-template-columns: 1fr; }
+}
+
+/* ===================== Home page extra animations ===================== */
+.hero-section { position: relative; }
+.hero-fx { position: absolute; inset: -20px; pointer-events: none; overflow: hidden; z-index: 0; }
+.hero-banner { position: relative; z-index: 1; }
+.fx-orb {
+  position: absolute; border-radius: 50%;
+  filter: blur(70px); opacity: .4; animation: orbDrift 14s ease-in-out infinite;
+}
+.fx-orb-1 { width: 380px; height: 380px; left: -6%; top: -12%; background: radial-gradient(circle, rgba(0,204,255,.5), transparent 70%); }
+.fx-orb-2 { width: 320px; height: 320px; right: -4%; top: 10%; background: radial-gradient(circle, rgba(255,0,68,.4), transparent 70%); animation-delay: -5s; }
+.fx-orb-3 { width: 260px; height: 260px; left: 40%; bottom: -30%; background: radial-gradient(circle, rgba(0,255,136,.35), transparent 70%); animation-delay: -9s; }
+.fx-float {
+  position: absolute; font-size: 1.4rem; opacity: .5; user-select: none;
+  filter: drop-shadow(0 0 12px rgba(0,204,255,.5));
+  animation: floatUp 9s ease-in-out infinite;
+}
+.fx-float-1 { left: 6%; top: 22%; animation-delay: 0s; }
+.fx-float-2 { left: 15%; top: 66%; animation-delay: -2.2s; font-size: 1rem; }
+.fx-float-3 { right: 8%; top: 30%; animation-delay: -4.1s; }
+.fx-float-4 { right: 18%; top: 70%; animation-delay: -6.3s; font-size: 1.1rem; }
+.fx-float-5 { left: 50%; top: 12%; animation-delay: -1.4s; font-size: 1.1rem; }
+.fx-float-6 { left: 30%; bottom: 4%; animation-delay: -7.5s; }
+
+@keyframes floatUp {
+  0%, 100% { transform: translateY(0) rotate(-4deg); }
+  50% { transform: translateY(-26px) rotate(6deg); }
+}
+@keyframes orbDrift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -24px) scale(1.08); }
+  66% { transform: translate(-24px, 20px) scale(.94); }
+}
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0,204,255,.35); }
+  50% { box-shadow: 0 0 0 12px rgba(0,204,255,0); }
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.banner-stage::after {
+  content: '';
+  position: absolute; inset: 6%;
+  border-radius: 28px;
+  box-shadow: 0 0 0 0 rgba(0,204,255,.18);
+  animation: ringPulse 3.2s ease-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+@keyframes ringPulse {
+  0% { box-shadow: 0 0 0 0 rgba(0,204,255,.22); }
+  70% { box-shadow: 0 0 0 34px rgba(0,204,255,0); }
+  100% { box-shadow: 0 0 0 0 rgba(0,204,255,0); }
+}
+
+.trending-strip .strip-item { animation: fadeUp .5s ease both; }
+.trending-strip .strip-item:nth-child(2) { animation-delay: .05s; }
+.trending-strip .strip-item:nth-child(3) { animation-delay: .1s; }
+.trending-strip .strip-item:nth-child(4) { animation-delay: .15s; }
+.trending-strip .strip-item:nth-child(5) { animation-delay: .2s; }
+.trending-strip .strip-item:nth-child(6) { animation-delay: .25s; }
+.trending-strip .strip-item:nth-child(7) { animation-delay: .3s; }
+.trending-strip .strip-item:nth-child(8) { animation-delay: .35s; }
+.trending-strip .strip-item:nth-child(9) { animation-delay: .4s; }
+.trending-strip .strip-item:nth-child(10) { animation-delay: .45s; }
+
+.browse-row .movie-card { animation: fadeUp .5s cubic-bezier(.22,.8,.36,1) both; }
+.browse-row .movie-card:nth-child(2) { animation-delay: .06s; }
+.browse-row .movie-card:nth-child(3) { animation-delay: .12s; }
+.browse-row .movie-card:nth-child(4) { animation-delay: .18s; }
+.browse-row .movie-card:nth-child(5) { animation-delay: .24s; }
+.browse-row .movie-card:nth-child(6) { animation-delay: .3s; }
+.browse-row .movie-card:nth-child(7) { animation-delay: .36s; }
+.browse-row .movie-card:nth-child(8) { animation-delay: .42s; }
+
+.browse-row-title { position: relative; }
+.browse-row-title::after {
+  content: '';
+  position: absolute; left: 0; bottom: -6px; height: 2px; width: 38px;
+  background: linear-gradient(90deg, var(--primary), transparent);
+  border-radius: 2px;
+  animation: shimmer 2.6s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0%, 100% { opacity: .35; transform: scaleX(.7); }
+  50% { opacity: 1; transform: scaleX(1.15); }
+}
+
+.movie-card { animation: none; }
+
+/* ===================== Professional Analytics ===================== */
+.admin-metrics-6 { grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); }
+.kpi-card {
+  text-align: left;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+  border: 1px solid rgba(255,255,255,.1);
+}
+.kpi-card h3 { display: flex; align-items: center; gap: .45rem; color: rgba(255,255,255,.75); }
+.kpi-card h3 .app-icon { color: var(--primary); }
+.kpi-card p { font-size: 1.9rem; font-weight: 800; color: #fff; }
+.kpi-card .admin-card-sub { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin-top: .35rem; }
+.kpi-card::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(220px 120px at 100% 0%, rgba(0,204,255,.12), transparent 60%);
+  pointer-events: none;
+}
+.delta-badge {
+  font-style: normal; display: inline-flex; align-items: center; gap: .15rem;
+  font-size: .68rem; font-weight: 800; padding: .12rem .45rem; border-radius: 999px;
+}
+.delta-badge .app-icon { margin: 0; }
+.delta-badge.up { color: #2aff9b; background: rgba(0,255,136,.12); }
+.delta-badge.down { color: #ff7094; background: rgba(255,65,108,.12); }
+
+.admin-section-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: .85rem; }
+.admin-section-head h3 { margin: 0; font-size: 1.05rem; }
+.chart-legend { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; font-size: .78rem; color: rgba(255,255,255,.7); }
+.chart-legend span { display: inline-flex; align-items: center; gap: .35rem; }
+.lg-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.dot-views { background: linear-gradient(135deg, #00ccff, #00ff88); box-shadow: 0 0 8px rgba(0,204,255,.5); }
+.dot-likes { background: linear-gradient(135deg, #ff2d6f, #ff8a3d); box-shadow: 0 0 8px rgba(255,45,111,.5); }
+.dot-comments { background: linear-gradient(135deg, #b388ff, #6a5cff); box-shadow: 0 0 8px rgba(179,136,255,.5); }
+
+.bars-14 { grid-template-columns: repeat(14, 1fr); gap: .35rem; align-self: end; }
+.tri-bar {
+  display: grid; gap: 3px; padding: 0 2px;
+  grid-template-columns: 1fr 1fr 1fr;
+  height: 190px; align-items: end;
+}
+.tri-bar-row {
+  position: relative; height: 100%;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: rgba(255,255,255,.03); border-radius: 5px 5px 0 0;
+}
+.tri-fill { width: 78%; border-radius: 4px 4px 0 0; min-height: 4px; transition: height .5s ease; }
+.fill-views { background: linear-gradient(180deg, #00ff88, #00ccff); box-shadow: 0 0 10px rgba(0,204,255,.35); }
+.fill-likes { background: linear-gradient(180deg, #ff8a3d, #ff2d6f); box-shadow: 0 0 10px rgba(255,45,111,.3); }
+.fill-comments { background: linear-gradient(180deg, #6a5cff, #b388ff); box-shadow: 0 0 10px rgba(179,136,255,.3); }
+
+.top-movies-table {
+  display: grid; gap: .45rem;
+  border: 1px solid rgba(255,255,255,.1); border-radius: 16px; padding: .85rem;
+  background: rgba(255,255,255,.02);
+}
+.top-movie-header-row, .top-movie-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 2fr) repeat(3, minmax(64px, 1fr)) 64px;
+  gap: .7rem; align-items: center;
+}
+.top-movie-header-row { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: rgba(255,255,255,.45); padding: 0 .3rem .3rem; }
+.top-movie-row { padding: .45rem .3rem; border-radius: 12px; transition: background .18s ease; }
+.top-movie-row:hover { background: rgba(0,204,255,.06); }
+.top-movie-row .app-icon { color: var(--primary); }
+.tm-rank {
+  width: 24px; height: 24px; display: grid; place-items: center;
+  border-radius: 8px; background: rgba(255,255,255,.08);
+  font-size: .72rem; font-weight: 800; color: rgba(255,255,255,.7);
+}
+.tm-rank.top { background: linear-gradient(135deg, var(--primary), var(--accent2)); color: #00131c; }
+.tm-title { color: #fff; font-size: .86rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-cell { font-size: .8rem; color: rgba(255,255,255,.8); display: flex; align-items: center; gap: .4rem; }
+.tm-views .app-icon, .tm-views { color: var(--primary); }
+.tm-likes, .tm-comments { color: rgba(255,255,255,.8); }
+.tm-score { font-weight: 800; color: #ffd700; text-align: right; }
+
+.bar-cell-mini { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .3rem; }
+.bar-cell-mini strong { color: #fff; font-size: .86rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-track { height: 6px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+.mini-fill { height: 100%; border-radius: 999px; min-width: 6px; transition: width .5s ease; }
+
+.admin-comment-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.admin-comment-head strong { color: #fff; font-size: .9rem; }
+.comment-movie-chip {
+  display: inline-flex; align-items: center; gap: .25rem;
+  font-size: .68rem; background: rgba(0,204,255,.12); color: var(--primary);
+  border: 1px solid rgba(0,204,255,.28); border-radius: 999px; padding: .12rem .5rem;
+  max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+@media (max-width: 760px) {
+  .bars-14 { grid-template-columns: repeat(7, 1fr); }
+  .top-movie-header-row, .top-movie-row { grid-template-columns: 24px minmax(0, 1.4fr) repeat(3, 44px) 52px; gap: .4rem; }
+  .tm-cell { font-size: .72rem; }
 }
 
 </style>

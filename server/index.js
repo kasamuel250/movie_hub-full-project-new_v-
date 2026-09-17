@@ -8,6 +8,8 @@ const cookieParser = require('cookie-parser');
 const mongoose = require('mongoose');
 const nodemailer = require('nodemailer');
 const dns = require('dns');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 // Use public DNS resolvers so Atlas SRV records resolve even when the local
@@ -24,6 +26,7 @@ const SupportRequest = require('./models/SupportRequest');
 const SongPlaylist = require('./models/SongPlaylist');
 const Visit = require('./models/Visit');
 const MusicPlay = require('./models/MusicPlay');
+const Payment = require('./models/Payment');
 const { getEnrichedMovieData } = require('./movieService');
 
 // MTN Mobile Money (Momo) configuration — production-ready gateway.
@@ -129,13 +132,14 @@ const memStore = {
   songPlaylists: [],
   visits: [],
   musicPlays: [],
+  payments: [],
   settings: null,
-  nextId: { user: 1, comment: 1, watchlist: 1, history: 1, favorite: 1, notification: 1, support: 1, songPlaylist: 1, visit: 1, musicPlay: 1 }
+  nextId: { user: 1, comment: 1, watchlist: 1, history: 1, favorite: 1, notification: 1, support: 1, songPlaylist: 1, visit: 1, musicPlay: 1, payment: 1 }
 };
 
 // Site-wide settings (footer content + subscription rules), editable by admin
 const DEFAULT_SETTINGS = {
-  siteName: 'FILMZ',
+  siteName: 'Ka_samuel@250',
   siteTagline: 'The Galaxy of Movies & Series',
   siteDescription: 'Explore the galaxy of movies and series in an immersive space-themed experience.',
   footerAbout: '',
@@ -151,6 +155,8 @@ const DEFAULT_SETTINGS = {
   features: ['Movie Trailers', 'User Profiles', 'Watchlists', 'AI Assistant'],
   // Theme control — the admin picks the site-wide theme shown to all users
   siteTheme: 'default',
+  // Global appearance — when ON, the whole site is forced into dark mode for every visitor
+  forceDarkMode: false,
   availableThemes: [
     { id: 'default', name: 'Galaxy Blue', primary: '#00ccff', accent: '#ff0044', accent2: '#00ff88' },
     { id: 'dark', name: 'Deep Space', primary: '#4a90e2', accent: '#e74c3c', accent2: '#2ecc71' },
@@ -165,6 +171,77 @@ const DEFAULT_SETTINGS = {
     { id: 'cyber', name: 'Cyber Yellow', primary: '#facc15', accent: '#f97316', accent2: '#22d3ee' },
     { id: 'sakura', name: 'Sakura Blossom', primary: '#ff9ecb', accent: '#ff5d8f', accent2: '#ffd1e8' }
   ]
+};
+
+// === Persistent fallback: the in-memory store is mirrored to a JSON file so
+// accounts created while MongoDB is unreachable are NEVER lost. On startup the
+// store is re-hydrated from disk, which keeps every registered user visible in
+// the admin panel forever, even across restarts. ===
+const DATA_DIR = path.join(__dirname, 'data');
+const STORE_FILE = path.join(DATA_DIR, 'db.json');
+
+let storeFlushTimer = null;
+const persistMemStore = () => {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(DATA_DIR)) {
+      try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) { /* ignore */ }
+    }
+    fs.writeFile(STORE_FILE, JSON.stringify(memStore, null, 2), 'utf8', (err) => {
+      if (err) console.error('Failed to persist store to disk:', err.message);
+      resolve();
+    });
+  });
+};
+
+const queueStoreSave = () => {
+  if (storeFlushTimer) return;
+  storeFlushTimer = setTimeout(() => {
+    storeFlushTimer = null;
+    persistMemStore();
+  }, 300);
+};
+
+const loadStoreFromDisk = () => {
+  try {
+    if (!fs.existsSync(STORE_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return;
+    const hydrated = {};
+    for (const key of Object.keys(memStore)) {
+      if (key === 'nextId') {
+        hydrated.nextId = { ...memStore.nextId, ...(parsed.nextId || {}) };
+      } else if (Array.isArray(parsed[key])) {
+        hydrated[key] = parsed[key];
+      } else if (parsed[key] === undefined || parsed[key] === null) {
+        hydrated[key] = memStore[key];
+      } else {
+        hydrated[key] = parsed[key];
+      }
+    }
+    Object.assign(memStore, hydrated);
+    if (memStore.settings && typeof memStore.settings === 'object') {
+      memStore.settings = { ...DEFAULT_SETTINGS, ...memStore.settings };
+    }
+    console.log(`Loaded ${memStore.users.length} user(s) from disk store (${memStore.payments.length} payment record(s), ${memStore.comments.length} comment(s))`);
+  } catch (e) {
+    console.error('Failed to load store from disk:', e.message);
+  }
+};
+
+// Mirror a user (Mongo or memory) into the persistent JSON store so their
+// account survives restarts and always shows up in the admin panel.
+const mirrorMemUser = (u) => {
+  if (!u) return;
+  const key = String(u._id || u.id || '');
+  if (!key) return;
+  const exists = memStore.users.some(x => String(x._id || x.id) === key || (u.email && x.email === u.email));
+  if (exists) return;
+  const copy = { ...u };
+  try { copy._id = String(copy._id || `${memStore.nextId.user++}`); } catch (e) { /* ignore */ }
+  if (copy.createdAt && !(copy.createdAt instanceof Date)) copy.createdAt = new Date(copy.createdAt);
+  if (!copy.createdAt) copy.createdAt = new Date();
+  memStore.users.push(copy);
+  queueStoreSave();
 };
 
 let dbReady = false;
@@ -194,7 +271,40 @@ let dbReady = false;
     createdAt: new Date()
   });
   console.log('In-memory users seeded (admin)');
+  loadStoreFromDisk();
+  // Ensure the admin account exists in the persistent fallback store too
+  const adminOnDisk = memStore.users.find(u => u.email === ADMIN_EMAIL);
+  if (!adminOnDisk) {
+    memStore.users.push({
+      _id: String(memStore.nextId.user++),
+      email: ADMIN_EMAIL,
+      passwordHash,
+      name: 'Ka_samuel@250 Admin',
+      username: 'ka__samuel250',
+      phone: process.env.ADMIN_PHONE || '+250 787 949 343',
+      location: 'Kigali, Rwanda',
+      bio: 'Admin of the Filmz galaxy',
+      avatar: null,
+      role: 'admin',
+      active: true,
+      resetToken: null,
+      resetTokenExpiry: null,
+      notificationsEnabled: true,
+      subscriptionTier: 'premium',
+      subscriptionExpiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      trialEndsAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      paymentMethod: { provider: '', number: '', name: '' },
+      createdAt: new Date()
+    });
+    persistMemStore();
+  }
 })();
+
+// Persist the full store to disk every 15 seconds (belt and braces), and on exit.
+setInterval(persistMemStore, 15000);
+const shutdownFromDisk = () => { persistMemStore().finally(() => process.exit(0)); };
+process.on('SIGINT', shutdownFromDisk);
+process.on('SIGTERM', shutdownFromDisk);
 
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
@@ -318,6 +428,7 @@ app.get('/api/settings/public', async (req, res) => {
       email: s.email || '',
       features: s.features || [],
       siteTheme: s.siteTheme || 'default',
+      forceDarkMode: s.forceDarkMode === true,
       availableThemes: s.availableThemes || []
     });
   } catch (e) {
@@ -393,29 +504,32 @@ app.get('/api/comments/:movieId', async (req, res) => {
 });
 
 app.post('/api/comments', async (req, res) => {
-  const { movieId, userName, text } = req.body;
+  const { movieId, movieTitle, userName, text } = req.body;
   if (!userName || !text || !movieId) {
     return res.status(400).json({ error: 'Required fields are missing' });
   }
   try {
     if (isDbConnected()) {
-      const result = await Comment.create({ movieId: String(movieId), userName, text });
+      const result = await Comment.create({ movieId: String(movieId), userName, text, createdAt: new Date() });
       return res.json({
         id: result._id, movieId: result.movieId, userName: result.userName,
-        name: result.userName, text: result.text,
+        name: result.userName, movieTitle: movieTitle || '', text: result.text,
         date: new Date(result.createdAt).toLocaleString('en-GB', {
           day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
         })
       });
     }
     const newComment = {
-      id: String(memStore.nextId.comment++), movieId: String(movieId), userName, text,
+      id: String(memStore.nextId.comment++), movieId: String(movieId), movieTitle: movieTitle || '',
+      userName, text,
+      createdAt: new Date(),
       date: new Date().toLocaleString('en-GB', {
         day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
       })
     };
     memStore.comments.push(newComment);
-    res.json(newComment);
+    queueStoreSave();
+    res.json({ id: newComment.id, movieId: newComment.movieId, userName, name: userName, movieTitle: newComment.movieTitle, text, date: newComment.date });
   } catch (error) {
     console.error('Comment creation error:', error);
     res.status(500).json({ error: 'Failed to save comment' });
@@ -444,6 +558,7 @@ app.post('/api/auth/register', async (req, res) => {
       });
       const token = jwt.sign({ id: newUser._id, email: newUser.email, username: newUser.username, role: newUser.role }, JWT_SECRET, { expiresIn: '7d' });
       res.cookie('token', token, { httpOnly: true, secure: false, sameSite: 'lax' });
+      mirrorMemUser(newUser);
       return res.json({ user: toPublicUser(newUser), token });
     }
     if (findMemUser('email', email.toLowerCase())) {
@@ -460,6 +575,7 @@ app.post('/api/auth/register', async (req, res) => {
       createdAt: new Date()
     };
     memStore.users.push(newUser);
+    queueStoreSave();
     const token = jwt.sign({ id: newUser._id, email: newUser.email, username: newUser.username, role: newUser.role }, JWT_SECRET, { expiresIn: '7d' });
     res.cookie('token', token, { httpOnly: true, secure: false, sameSite: 'lax' });
     res.json({ user: toPublicUser(newUser), token });
@@ -492,6 +608,7 @@ app.post('/api/auth/login', async (req, res) => {
       if (!bcrypt.compareSync(password, foundUser.passwordHash)) return res.status(401).json({ error: 'Invalid credentials' });
     }
     if (foundUser.active === false) return res.status(403).json({ error: 'Account blocked. Contact support.' });
+    mirrorMemUser(foundUser);
     const token = jwt.sign({
       id: foundUser._id,
       email: foundUser.email,
@@ -519,6 +636,7 @@ app.get('/api/auth/me', async (req, res) => {
     }
     if (!user) return res.status(401).json({ error: 'Not authenticated' });
     if (user.active === false) return res.status(403).json({ error: 'Account blocked. Contact support.' });
+    mirrorMemUser(user);
     return res.json({ user: toPublicUser(user) });
   } catch (error) {
     console.error('Auth check error:', error);
@@ -726,6 +844,7 @@ app.post('/api/watch-history', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!memStore.watchHistories.some(h => h.user === user._id && h.movieId === movieId)) {
       memStore.watchHistories.push({ id: String(memStore.nextId.history++), user: user._id, movieId, movieTitle: movieTitle || '', watchedAt: new Date() });
+      queueStoreSave();
     }
     res.json({ success: true });
   } catch (error) {
@@ -851,6 +970,7 @@ app.post('/api/favorites', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!memStore.favorites.some(f => f.user === user._id && f.movieId === movieId)) {
       memStore.favorites.push({ id: String(memStore.nextId.favorite++), user: user._id, movieId, movieTitle: movieTitle || '', posterPath: posterPath || '', createdAt: new Date() });
+      queueStoreSave();
     }
     res.json({ success: true });
   } catch (error) {
@@ -895,6 +1015,7 @@ app.delete('/api/favorites/:movieId', async (req, res) => {
     const user = findMemUser('_id', decoded.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     memStore.favorites = memStore.favorites.filter(f => !(f.user === user._id && f.movieId === req.params.movieId));
+    queueStoreSave();
     const userFavs = memStore.favorites.filter(f => f.user === user._id);
     res.json({ favorites: userFavs });
   } catch (error) {
@@ -1202,6 +1323,286 @@ app.get('/api/subscription/verify/:referenceId', async (req, res) => {
   }
 });
 
+// === MANUAL PAYMENTS ===
+// Users who cannot use the online MoMo prompt can submit a manual payment proof
+// (money sent directly to the app's mobile money number). The admin verifies
+// these from the Payments tab and activates premium manually. Every payment is
+// mirrored into the persistent fallback store so it is never lost.
+
+const findMemPayment = (id) => (memStore.payments || []).find(p => String(p.id) === String(id));
+const memPaymentId = () => String(memStore.nextId.payment++);
+
+const activatePremiumForUser = async (userId, months) => {
+  let user = null;
+  if (isDbConnected()) user = await User.findOne({ _id: userId });
+  const memUser = findMemUser('_id', userId);
+  if (!user && !memUser) return false;
+  const base = new Date();
+  const expiryFrom = (u) => (u.subscriptionExpiry && new Date(u.subscriptionExpiry).getTime() > Date.now()) ? new Date(u.subscriptionExpiry) : base;
+  const expiry = new Date(expiryFrom(user || memUser).getTime() + months * 30 * 24 * 60 * 60 * 1000);
+  const msg = `Premium is active until ${expiry.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}.`;
+  if (user) {
+    user.subscriptionTier = 'premium';
+    user.subscriptionExpiry = expiry;
+    await user.save();
+    await Notification.create({ user: user._id, type: 'payment', title: 'Premium activated 🎉', body: `Your payment was confirmed. ${msg}`, movieId: '', read: false });
+  }
+  if (memUser) {
+    memUser.subscriptionTier = 'premium';
+    memUser.subscriptionExpiry = expiry;
+    memStore.notifications.push({ id: String(memStore.nextId.notification++), user: memUser._id, type: 'payment', title: 'Premium activated 🎉', body: `Your payment was confirmed. ${msg}`, movieId: '', read: false, createdAt: new Date() });
+  }
+  return true;
+};
+
+app.post('/api/subscription/manual', async (req, res) => {
+  const token = req.cookies?.token || req.headers?.authorization?.split(' ')[1];
+  const decoded = getUserFromToken(token);
+  if (!decoded) return res.status(401).json({ error: 'Not authenticated' });
+  const { provider, number, name, plan, transactionId, message } = req.body || {};
+  const payerNumber = String(number || '').replace(/[\s-]/g, '');
+  if (!/^\+?[0-9]{9,14}$/.test(payerNumber)) {
+    return res.status(400).json({ error: 'A valid Mobile Money number is required' });
+  }
+  const selPlan = plan === 'yearly' ? 'yearly' : 'monthly';
+  const amount = selPlan === 'yearly' ? Math.round(PREMIUM_PRICE * 10) : PREMIUM_PRICE;
+  try {
+    let user;
+    if (isDbConnected()) user = await User.findById(decoded.id);
+    else user = findMemUser('_id', decoded.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    user.paymentMethod = {
+      provider: provider || user.paymentMethod?.provider || 'MTN',
+      number: payerNumber,
+      name: name || user.paymentMethod?.name || ''
+    };
+    if (isDbConnected()) await user.save();
+    mirrorMemUser(user);
+
+    const tx = String(transactionId || '').trim() || `manual-${Date.now()}`;
+    const now = new Date();
+    let id;
+    if (isDbConnected()) {
+      const doc = await Payment.create({
+        user: user._id, userId: String(user._id), method: 'manual',
+        provider: provider || 'MTN', number: payerNumber, name: name || user.name || user.username || '',
+        plan: selPlan, amount, currency: MOMO_CURRENCY, transactionId: tx,
+        message: String(message || '').slice(0, 500), status: 'pending', createdAt: now
+      });
+      id = String(doc._id);
+    } else {
+      id = memPaymentId();
+    }
+    const memP = {
+      id, userId: String(user._id || user.id), method: 'manual',
+      provider: provider || 'MTN', number: payerNumber, name: name || user.name || user.username || '',
+      plan: selPlan, amount, currency: MOMO_CURRENCY, transactionId: tx,
+      message: String(message || '').slice(0, 500), status: 'pending', note: '',
+      handledAt: null, createdAt: now
+    };
+    const memExisting = findMemPayment(id);
+    if (memExisting) Object.assign(memExisting, memP);
+    else memStore.payments.push(memP);
+    queueStoreSave();
+
+    res.json({
+      status: 'manual',
+      paymentId: id,
+      message: `Manual payment request recorded! Send ${amount} ${MOMO_CURRENCY} to ${MOMO_PAYEE_NAME} (${MOMO_PAYEE_MSISDN})${tx ? ` with reference ${tx}` : ''}. We will activate your premium as soon as the admin confirms your payment.`
+    });
+  } catch (error) {
+    console.error('Manual payment submit error:', error.message);
+    res.status(500).json({ error: 'Could not record manual payment. Please contact support.' });
+  }
+});
+
+app.get('/api/admin/payments', async (req, res) => {
+  const decoded = requireAdmin(req, res);
+  if (!decoded) return;
+  const statusFilter = String(req.query.status || '');
+  try {
+    let payments = [];
+    if (isDbConnected()) {
+      const docs = await Payment.find().sort({ createdAt: -1 }).lean();
+      payments = docs.map(p => ({
+        id: String(p._id), userId: String(p.userId || p.user || ''), method: p.method || 'manual',
+        provider: p.provider || 'MTN', number: p.number || '', name: p.name || '',
+        plan: p.plan || 'monthly', amount: p.amount || 0, currency: p.currency || MOMO_CURRENCY,
+        transactionId: p.transactionId || '', message: p.message || '',
+        status: p.status || 'pending', note: p.note || '', handledAt: p.handledAt || null, createdAt: p.createdAt
+      }));
+      const seen = new Set(payments.map(p => String(p.id)));
+      memStore.payments.forEach(mp => {
+        if (!seen.has(String(mp.id))) {
+          payments.push({ id: String(mp.id), ...mp });
+        }
+      });
+    } else {
+      payments = memStore.payments.map(mp => ({ id: String(mp.id), ...mp }));
+    }
+
+    const enriched = await Promise.all(payments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map(async (p) => {
+      let u = null;
+      if (isDbConnected() && p.userId) {
+        try { u = await User.findOne({ _id: p.userId }).lean(); } catch (e) { u = null; }
+      }
+      if (!u && p.userId) u = findMemUser('_id', p.userId);
+      return {
+        ...p,
+        userName: (u && (u.username || u.name)) || p.name || 'Unknown',
+        email: (u && u.email) || '',
+        avatar: (u && u.avatar) || null
+      };
+    }));
+
+    const filtered = statusFilter ? enriched.filter(p => p.status === statusFilter) : enriched;
+    res.json({
+      payments: filtered,
+      counts: {
+        pending: enriched.filter(p => p.status === 'pending').length,
+        approved: enriched.filter(p => p.status === 'approved').length,
+        rejected: enriched.filter(p => p.status === 'rejected').length
+      }
+    });
+  } catch (error) {
+    console.error('Admin payments fetch error:', error);
+    res.status(500).json({ payments: [] });
+  }
+});
+
+app.post('/api/admin/payments/:id/approve', async (req, res) => {
+  const decoded = requireAdmin(req, res);
+  if (!decoded) return;
+  const paymentId = req.params.id;
+  const note = String(req.body?.note || 'Payment verified by admin').trim() || 'Payment verified by admin';
+  try {
+    let payment = null;
+    if (isDbConnected()) {
+      try { payment = await Payment.findOne({ _id: paymentId }).lean(); } catch (e) { payment = null; }
+    }
+    if (!payment) payment = findMemPayment(paymentId);
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+
+    const userId = String(payment.userId || payment.user || '');
+    if (!userId) return res.status(400).json({ error: 'Payment has no linked user' });
+
+    const months = payment.plan === 'yearly' ? 12 : 1;
+    const activated = await activatePremiumForUser(userId, months);
+    if (!activated) return res.status(404).json({ error: 'User not found for this payment' });
+
+    if (isDbConnected()) {
+      await Payment.updateOne({ _id: paymentId }, { $set: { status: 'approved', note, handledAt: new Date() } });
+    }
+    const memP = findMemPayment(paymentId);
+    if (memP) Object.assign(memP, { status: 'approved', note, handledAt: new Date() });
+    queueStoreSave();
+
+    res.json({ success: true, message: `Approved! ${months} month(s) of premium added for this user.`, payment: { ...payment, status: 'approved', note } });
+  } catch (error) {
+    console.error('Approve payment error:', error);
+    res.status(500).json({ error: 'Could not approve payment' });
+  }
+});
+
+app.post('/api/admin/payments/:id/reject', async (req, res) => {
+  const decoded = requireAdmin(req, res);
+  if (!decoded) return;
+  const paymentId = req.params.id;
+  const note = String(req.body?.note || 'Payment could not be verified by admin').trim() || 'Payment could not be verified by admin';
+  try {
+    let payment = null;
+    if (isDbConnected()) {
+      try { payment = await Payment.findOne({ _id: paymentId }).lean(); } catch (e) { payment = null; }
+    }
+    if (!payment) payment = findMemPayment(paymentId);
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+
+    const userId = String(payment.userId || payment.user || '');
+    if (isDbConnected()) {
+      await Payment.updateOne({ _id: paymentId }, { $set: { status: 'rejected', note, handledAt: new Date() } });
+    }
+    const memP = findMemPayment(paymentId);
+    if (memP) Object.assign(memP, { status: 'rejected', note, handledAt: new Date() });
+    queueStoreSave();
+
+    if (userId) {
+      let user = null;
+      if (isDbConnected()) { try { user = await User.findOne({ _id: userId }); } catch (e) { user = null; } }
+      const memUser = findMemUser('_id', userId);
+      const notify = { type: 'payment', title: 'Payment not confirmed', body: `We could not confirm your manual payment ${note}. Contact us via support if you already paid.`, movieId: '', read: false, createdAt: new Date() };
+      if (user) await Notification.create({ user: user._id, ...notify });
+      if (memUser) memStore.notifications.push({ id: String(memStore.nextId.notification++), user: memUser._id, ...notify });
+    }
+
+    res.json({ success: true, message: 'Payment marked as rejected.', payment: { ...payment, status: 'rejected', note } });
+  } catch (error) {
+    console.error('Reject payment error:', error);
+    res.status(500).json({ error: 'Could not reject payment' });
+  }
+});
+
+app.post('/api/admin/payments', async (req, res) => {
+  const decoded = requireAdmin(req, res);
+  if (!decoded) return;
+  const { userId, plan, amount, transactionId, message, approve } = req.body || {};
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
+  try {
+    let user = null;
+    if (isDbConnected()) user = await User.findOne({ _id: userId });
+    if (!user) user = findMemUser('_id', userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    mirrorMemUser(user);
+
+    const selPlan = plan === 'yearly' ? 'yearly' : 'monthly';
+    const amt = parseFloat(amount) || (selPlan === 'yearly' ? Math.round(PREMIUM_PRICE * 10) : PREMIUM_PRICE);
+    const now = new Date();
+    const isApproved = approve === true || approve === 'true';
+    const p = {
+      userId: String(user._id), method: 'manual', provider: 'MTN', number: user.paymentMethod?.number || '',
+      name: user.name || user.username || '', plan: selPlan, amount: amt, currency: MOMO_CURRENCY,
+      transactionId: String(transactionId || `admin-${Date.now()}`),
+      message: String(message || 'Manual record created by admin'),
+      status: isApproved ? 'approved' : 'pending', note: '', handledAt: isApproved ? now : null, createdAt: now
+    };
+    let id;
+    if (isDbConnected()) {
+      const doc = await Payment.create({ ...p, user: user._id });
+      id = String(doc._id);
+    } else {
+      id = memPaymentId();
+    }
+    const mp = { ...p, id };
+    memStore.payments.push(mp);
+    if (isApproved) {
+      const months = selPlan === 'yearly' ? 12 : 1;
+      await activatePremiumForUser(String(user._id), months);
+    }
+    queueStoreSave();
+    res.json({ success: true, message: isApproved ? 'Payment recorded and premium granted.' : 'Payment record created pending approval.', payment: mp });
+  } catch (error) {
+    console.error('Admin create payment error:', error);
+    res.status(500).json({ error: 'Could not create payment' });
+  }
+});
+
+app.delete('/api/admin/payments/:id', async (req, res) => {
+  const decoded = requireAdmin(req, res);
+  if (!decoded) return;
+  const paymentId = req.params.id;
+  try {
+    if (isDbConnected()) {
+      try { await Payment.deleteOne({ _id: paymentId }); } catch (e) { /* ignore */ }
+    }
+    memStore.payments = memStore.payments.filter(p => String(p.id) !== String(paymentId));
+    queueStoreSave();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete payment error:', error);
+    res.status(500).json({ error: 'Could not delete payment' });
+  }
+});
+
 app.get('/api/recommendations', async (req, res) => {
   const token = req.cookies?.token || req.headers?.authorization?.split(' ')[1];
   const decoded = getUserFromToken(token);
@@ -1261,47 +1662,189 @@ app.get('/api/movie/:id/reviews', async (req, res) => {
   }
 });
 
-// AI Chat endpoint - proxies Gemini API (key stays on server)
+// AI Chat endpoint - proxies the Gemini API (key stays on server).
+// It ALWAYS returns a helpful answer: if the key is missing or the API fails,
+// it falls back to an accurate offline knowledge-base so the assistant never
+// goes silent.
+const AI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+
+// Build the live site facts the assistant uses so its answers are accurate.
+const buildAiContext = async () => {
+  const st = await getSettings();
+  const digits = String(st.whatsapp || '').replace(/\D/g, '');
+  const waLink = digits ? ('wa.me/' + (/^250/.test(digits) ? digits : '250' + digits.replace(/^0/, ''))) : 'wa.me/250787949343';
+  const price = parseFloat(st.subscriptionPrice) || 4000;
+  return {
+    siteName: st.siteName || 'Ka_samuel@250',
+    tagline: st.siteTagline || 'The Galaxy of Movies & Series',
+    description: st.siteDescription || '',
+    email: st.email || 'kasamuel71@gmail.com',
+    phone: st.phone || '+250 787 949 343',
+    whatsapp: waLink,
+    instagram: st.instagram || 'ka__samuel250',
+    currency: st.subscriptionCurrency || 'RWF',
+    subscriptionPrice: price,
+    yearlyPrice: price * 10,
+    payeeNumber: process.env.MOMO_PAYEE_MSISDN || '0782175566',
+    features: Array.isArray(st.features) && st.features.length ? st.features.join(', ') : 'Movie Trailers, User Profiles, Watchlists, AI Assistant'
+  };
+};
+
+const aiSystemPrompt = (ctx) => 'You are the customer assistant for a movie & music streaming website called "' + ctx.siteName + ' Filmz" (' + ctx.tagline + '). Use these TRUE site facts to answer accurately, never inventing different pricing or contacts:' +
+  '\n- Site: ' + ctx.siteName + ' Filmz. Features: ' + ctx.features + '.' +
+  '\n- Watching: every movie poster has a red TRAILER button and a green WATCH FULL MOVIE button. Full movies stream via sources like VidSrc, MultiEmbed, EmbedSu and PlayerHub, with a source switcher, open-in-tab and download. Movie cards, trailers and the cinema hall player are on the Home page.' +
+  '\n- Music: the YOUTMUS tab searches and plays music from YouTube, has quick chips (Trending, Afrobeats, Gospel Worship...), and lets users save songs into playlists that keep playing in a mini player.' +
+  '\n- Premium plans: Monthly ' + ctx.currency + ' ' + ctx.subscriptionPrice + ', Yearly ' + ctx.currency + ' ' + ctx.yearlyPrice + '. Payments ONLY via MTN Mobile Money: automatic (MTN Pay request-to-pay, instant) and manual (send to ' + ctx.payeeNumber + ', submit proof, an admin verifies and activates).' +
+  '\n- Contact: WhatsApp ' + ctx.whatsapp + ', Phone ' + ctx.phone + ', Email ' + ctx.email + ', Instagram @' + ctx.instagram + '.' +
+  '\n- Appearance: admins can switch a site-wide theme live (12 themes) and users have a dark mode toggle.' +
+  '\n- Admin panel features: Overview, Users, Payments (approve/reject manual), Themes, Site & Footer, Broadcast, Comments, Analytics, Support.' +
+  '\n\nRules: Be friendly, concise and warm. Use short paragraphs or bullet lists. Answer app questions from the facts above; for general movie/music questions use your own knowledge and feel free to recommend movies. If you do not know something, say so and point the user to support. Keep the reply under ~150 words.';
+
+// Offline knowledge-base used when the Gemini key is absent or the API fails.
+const localAIFallback = (message, ctx) => {
+  const text = String(message || '').toLowerCase();
+  const price = ctx.subscriptionPrice;
+  const yearly = ctx.yearlyPrice;
+  if (/^(hi|hello|hey|yo|good (morning|afternoon|evening)|howdy|salut|bonjour|hello there)/.test(text)) {
+    return 'Hi there! Welcome to ' + ctx.siteName + ' Filmz \u2014 your movies & music hub.\n\nI can help you with:\n\u2022 Trending movies and new releases\n\u2022 Watching trailers or full movies\n\u2022 Premium plans & payments (MTN Mobile Money)\n\u2022 Music on YOUTMUS and playlists\n\u2022 Themes & dark mode\n\u2022 Support & contact\n\nWhat would you like to know?';
+  }
+  if (/trending|top movie|popular|recommend|best film|what'?s hot|now playing|movie suggest/.test(text)) {
+    return 'Trending movies appear right on the Home page \u2014 the hero banner plus rows like "Trending Now". Every poster has two buttons:\n\u2022 TRAILER (red) \u2014 plays the official trailer instantly\n\u2022 WATCH FULL MOVIE (green) \u2014 streams the full film online\n\nYou can also search any title with the search bar and switch between Movies / TV Shows. ' + (ctx.options ? '' : 'If you tell me a genre or actor you love, I can point you to similar picks!');
+  }
+  if (/new release|new movie|coming soon|latest|just arrived/.test(text)) {
+    return 'New releases are covered in two ways:\n\u2022 We detect new movies and push a "New movie arrived" notification to everyone who has notifications enabled (look at the bell icon).\n\u2022 Browse the Home page rows and hero banner for the latest titles.\n\nWhat genre are you hoping to find?';
+  }
+  if (/premium|subscribe|subscription|plan|upgrade|pro|pay|cost|price|fee|billing|buy|membership|trial|status/.test(text)) {
+    return 'Premium unlocks the full experience. Plans (' + ctx.currency + '):\n\u2022 Monthly \u2014 ' + price + ' ' + ctx.currency + '\n\u2022 Yearly \u2014 ' + yearly + ' ' + ctx.currency + '\n\u2022 Lifetime \u2014 one-time upgrade\n\nPayments are accepted via MTN Mobile Money in two ways:\n\u2022 AUTOMATIC \u2014 MTN Pay (request-to-pay), activates instantly.\n\u2022 MANUAL \u2014 send the amount to ' + ctx.payeeNumber + ', then submit your transaction reference; an admin verifies and activates it for you.\n\nEvery new account gets a free trial. Open the Premium page from the menu to subscribe.';
+  }
+  if (/manual|proof|reference|transaction|pay method|sender|how to pay/.test(text)) {
+    return 'Manual payment is simple:\n1) Open Premium and pick a plan.\n2) Send the amount to our MTN Mobile Money number ' + ctx.payeeNumber + '.\n3) Enter the sender number, transaction reference and an optional note.\n4) Submit \u2014 our admin verifies your proof and activates premium, usually very quickly.\n\nWant it instantly instead? Use the AUTOMATIC option (MTN Pay) \u2014 no admin needed.';
+  }
+  if (/auto|request.?to.?pay|instant|momo|mobile money/.test(text)) {
+    return 'Automatic payment uses MTN Pay: choosing it sends a payment request directly to your MTN number, you confirm it on your phone, and your premium activates automatically \u2014 no waiting for an admin.\n\nIf the gateway is not configured yet the page will say so, and you can use the MANUAL method instead.';
+  }
+  if (/watch|stream|full movie|cinema|play|how.*watch|watch.*movie|episode/.test(text)) {
+    return 'Watching on ' + ctx.siteName + ' Filmz:\n\u2022 Click WATCH FULL MOVIE (green) on any poster to open the cinema hall player.\n\u2022 TRAILER (red) plays the official trailer first.\n\u2022 Inside the player you can switch between sources (VidSrc, MultiEmbed, EmbedSu, PlayerHub), open in a new tab, and download.\n\u2022 EXIT returns you to browsing.\n\nComments are right below the player so viewers can chat together.';
+  }
+  if (/music|song|youtmus|audio|playlist|vibe|track|sound|sing/.test(text)) {
+    return 'YOUTMUS is the built-in music player:\n\u2022 Search any song, artist or vibe (powered by YouTube Music).\n\u2022 Use quick chips like Trending, Afrobeats, Gospel Worship.\n\u2022 Press "+ List" on any song to save it into one of your playlists.\n\u2022 A mini player follows you, so the music keeps playing while you browse.\n\nOpen the YOUTMUS tab in the header to get started!';
+  }
+  if (/favorite|watchlist|save|bookmark|like|list/.test(text)) {
+    return 'Saving titles on ' + ctx.siteName + ' Filmz:\n\u2022 Heart on a poster \u2014 likes the movie.\n\u2022 Bookmark \u2014 saves it to your Watchlist.\n\u2022 You can also build named watchlists from the "Lists" page in your profile.\n\nYour likes, favorites and watch history all sync to your profile.';
+  }
+  if (/theme|dark|light|color|design|look|appearance|visual/.test(text)) {
+    return 'Appearance:\n\u2022 Toggle Dark Mode from the dotted menu (or Settings).\n\u2022 Pick a personal theme (Galaxy, Deep Space, Neon Cyber, Retro Sci-Fi and more) from the menu, Settings or the footer.\n\u2022 Admins can change the whole site\'s theme instantly from Admin \u2192 Themes \u2014 it goes live for every user right away.';
+  }
+  if (/admin|analytics|dashboard|manage|moderat|control|settings panel|backend/.test(text)) {
+    return 'The admin panel gives authorized admins:\n\u2022 Overview \u2014 users, views and premium revenue KPIs\n\u2022 Users \u2014 search, edit and manage accounts\n\u2022 Payments \u2014 approve/reject manual payments, grant premium\n\u2022 Themes \u2014 switch the site-wide theme instantly\n\u2022 Site & Footer \u2014 brand, contact info and pricing\n\u2022 Broadcast \u2014 send alerts to all users\n\u2022 Analytics \u2014 14-day trends, top movies, visitors\n\u2022 Support \u2014 help-desk inbox with replies\n\nOnly accounts with admin rights can see the Admin tab.';
+  }
+  if (/bug|error|problem|issue|not working|broken|report|help|support|assist|stuck/.test(text)) {
+    return 'Here\u2019s how to get help on ' + ctx.siteName + ' Filmz:\n\u2022 Use the Help & Support form in your Profile \u2014 we reply right there.\n\u2022 WhatsApp: ' + ctx.whatsapp + '\n\u2022 Call or text: ' + ctx.phone + '\n\u2022 Email: ' + ctx.email + '\n\u2022 Instagram: @' + ctx.instagram + '\n\nTell us what happened and we\u2019ll sort it out quickly!';
+  }
+  if (/contact|email|phone|whatsapp|instagram|reach|call|message|talk/.test(text)) {
+    return 'You can reach ' + ctx.siteName + ' Filmz:\n\u2022 WhatsApp: ' + ctx.whatsapp + '\n\u2022 Phone: ' + ctx.phone + '\n\u2022 Email: ' + ctx.email + '\n\u2022 Instagram: @' + ctx.instagram + '\n\nYou can also file a support ticket from your Profile page.';
+  }
+  if (/thank|thanks|merci|appreciat|great|awesome|nice/.test(text)) {
+    return 'You\u2019re very welcome! Enjoy the movies and music \u2014 anything else I can help you with?';
+  }
+  if (/how are you|how do you do|who are you|what can you do|help me/.test(text)) {
+    return 'I\u2019m the ' + ctx.siteName + ' Filmz assistant! I can help you find movies, play music on YOUTMUS, explain premium plans and payments, manage themes, or connect you with support. Try asking:\n\u2022 "What movies are trending?"\n\u2022 "How do I subscribe with MTN?"\n\u2022 "Play me some afrobeats"\n\u2022 "How do I contact support?"';
+  }
+  return 'I can help you with everything on ' + ctx.siteName + ' Filmz:\n\u2022 Trending & new movies\n\u2022 Watching trailers and full movies\n\u2022 Premium plans & payments (MTN MoMo manual & automatic)\n\u2022 Music, YOUTMUS and playlists\n\u2022 Themes & dark mode\n\u2022 Support & contact\n\nMy live brain is temporarily offline, but I\u2019ll still answer whenever I can \u2014 try asking again in a moment, or reach us on WhatsApp ' + ctx.whatsapp + ' or email ' + ctx.email + ' for anything urgent.';
+};
+
+// Normalise the conversation so Gemini accepts it (first turn must be a USER
+// message and the roles must alternate). This stops "first input must be user"
+// errors that used to silently fall back to the canned answers.
+const buildAiHistory = (history, message) => {
+  const raw = [];
+  if (history && Array.isArray(history)) {
+    for (const msg of history) {
+      const text = String(msg && (msg.content || msg.text) || '').trim();
+      if (!text) continue;
+      const role = (msg.role === 'model' || msg.role === 'assistant') ? 'model' : 'user';
+      raw.push({ role, text });
+    }
+  }
+  // Gemini requires the very first turn to be a 'user' turn.
+  while (raw.length && raw[0].role === 'model') raw.shift();
+  const merged = [];
+  for (const t of raw) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === t.role) last.text += '\n\n' + t.text;
+    else merged.push(t);
+  }
+  const current = String(message || '').trim();
+  const lastC = merged[merged.length - 1];
+  if (lastC && lastC.role === 'user') lastC.text += '\n\n' + current;
+  else merged.push({ role: 'user', text: current });
+  return merged.map(t => ({ role: t.role, parts: [{ text: t.text }] }));
+};
+
+const extractGeminiText = (data) => data && data.candidates && data.candidates[0] && data.candidates[0].content &&
+  data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+
+// Free no-key backup brain so the assistant keeps answering ALL questions even
+// when the Gemini daily quota runs out (which returns HTTP 429).
+const callBackupLLM = async (message) => {
+  const prompt = String(message || '').slice(0, 600);
+  try {
+    const res = await axios.get('https://text.pollinations.ai/' + encodeURIComponent(prompt), {
+      timeout: 30000,
+      responseType: 'text'
+    });
+    const text = res && typeof res.data === 'string' ? res.data.trim() : '';
+    if (text) return text;
+  } catch (e) {
+    console.error('Backup LLM error:', e.message);
+  }
+  return null;
+};
+
 app.post('/api/ai/chat', async (req, res) => {
   const { message, history } = req.body;
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
   }
+  const ctx = await buildAiContext();
   const GEMINI_KEY = process.env.GEMINI_KEY || process.env.VITE_GEMINI_KEY;
-  if (!GEMINI_KEY) {
-    return res.status(500).json({ error: 'AI service not configured' });
-  }
-  try {
-    const contents = [];
-    const sysPrompt = 'You are a helpful AI assistant for a movie streaming app called "Ka_samuel@250 Filmz". Answer questions helpfully about movies, the app features, or general questions. Keep responses concise and friendly.';
-    if (history && Array.isArray(history)) {
-      for (const msg of history) {
-        if (msg.role === 'model' || msg.role === 'assistant') {
-          contents.push({ role: 'model', parts: [{ text: msg.content || msg.text }] });
-        } else {
-          contents.push({ role: 'user', parts: [{ text: msg.content || msg.text }] });
+  const usableKey = GEMINI_KEY && GEMINI_KEY.length >= 20;
+  const contents = buildAiHistory(history, message);
+
+  if (usableKey) {
+    // Primary brain: Gemini (retried once so a momentary rate-limit hiccup
+    // doesn't make the assistant go silent).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await axios.post(
+          'https://generativelanguage.googleapis.com/v1beta/models/' + AI_MODEL + ':generateContent?key=' + encodeURIComponent(GEMINI_KEY),
+          {
+            contents,
+            systemInstruction: { parts: [{ text: aiSystemPrompt(ctx) }] },
+            generationConfig: { temperature: 0.6, maxOutputTokens: 600 }
+          },
+          { headers: { 'Content-Type': 'application/json' }, timeout: 20000 }
+        );
+        const text = extractGeminiText(response.data);
+        if (text && text.trim()) {
+          return res.json({ response: text.trim(), model: AI_MODEL, source: 'gemini' });
         }
+        break; // empty answer, stop retrying
+      } catch (error) {
+        console.error('Gemini API error (attempt ' + (attempt + 1) + '):', (error.response && error.response.data && error.response.data.error && error.response.data.error.message) || error.message);
+        if (attempt === 0) await new Promise(r => setTimeout(r, 1200));
       }
     }
-    contents.push({ role: 'user', parts: [{ text: message }] });
-
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_KEY}`,
-      {
-        contents,
-        systemInstruction: { parts: [{ text: sysPrompt }] }
-      },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
-    );
-    const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response generated.';
-    res.json({ response: text });
-  } catch (error) {
-    console.error('Gemini API error:', error.response?.data?.error?.message || error.message);
-    res.status(500).json({
-      error: 'AI service error',
-      response: 'Sorry, I encountered an error processing your request.'
-    });
   }
+
+  // Backup brain: answers any question even when the Gemini quota is exhausted.
+  const backup = await callBackupLLM(message);
+  if (backup) {
+    return res.json({ response: backup, source: 'backup' });
+  }
+
+  // Last resort: accurate offline knowledge-base for the site's own topics.
+  return res.json({ response: localAIFallback(message, ctx), fallback: true, source: 'local' });
 });
 
 app.get('/api/download/:type/:id', (req, res) => {
@@ -1310,7 +1853,12 @@ app.get('/api/download/:type/:id', (req, res) => {
   res.json({
     url: `https://vidsrc.to/${type}/${id}`,
     embedUrl: `https://vidsrc.to/embed/${type}/${id}`,
-    alternatives: [`https://www.2embed.cc/${type}/${id}`, `https://player.smashy.stream/${type}/${id}`],
+    alternatives: [
+      `https://vidsrc.to/embed/${type}/${id}`,
+      `https://vidlink.pro/${type}/${id}`,
+      `https://multiembed.mov/?tmdb=1&video_id=${id}`,
+      `https://2embed.cc/embed/${type}/${id}`
+    ],
     message: 'Use browser developer tools or video download extensions to download from the streaming page.'
   });
 });
@@ -1340,6 +1888,22 @@ app.get('/api/admin/users', async (req, res) => {
         notificationCount: (memStore.notifications || []).filter(n => n.user === u._id).length
       }));
     }
+    // Merge any users that exist only in the persistent fallback store so that
+    // accounts created while MongoDB was offline still appear in the admin panel.
+    if (isDbConnected()) {
+      const mongoKeys = new Set(users.map(u => String(u.id)));
+      memStore.users.forEach(mu => {
+        const key = String(mu._id || mu.id || '');
+        if (key && !mongoKeys.has(key)) {
+          users.push({
+            ...toAdminUser(mu),
+            fromFallback: true,
+            favoriteCount: memStore.favorites.filter(f => f.user === key).length,
+            notificationCount: (memStore.notifications || []).filter(n => n.user === key).length
+          });
+        }
+      });
+    }
     users.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     res.json({ users });
   } catch (error) {
@@ -1367,6 +1931,7 @@ app.delete('/api/admin/users/:id', async (req, res) => {
     memStore.watchlists = memStore.watchlists.filter(w => w.user !== userId);
     memStore.watchHistories = memStore.watchHistories.filter(h => h.user !== userId);
     memStore.favorites = memStore.favorites.filter(f => f.user !== userId);
+    queueStoreSave();
     res.json({ success: true });
   } catch (error) {
     console.error('Admin delete user failed:', error);
@@ -1385,7 +1950,12 @@ app.get('/api/admin/stats', async (req, res) => {
       totalWatchRecords = await WatchHistory.countDocuments();
       totalFavorites = await Favorite.countDocuments();
       totalComments = await Comment.countDocuments();
-      const users = await User.find().lean();
+      // Include accounts that only live in the persistent fallback store
+      const mongoUsers = await User.find().lean();
+      const mongoEmails = new Set(mongoUsers.map(u => u.email));
+      const fallbackOnly = memStore.users.filter(u => u.email && !mongoEmails.has(u.email));
+      totalUsers += fallbackOnly.length;
+      const users = [...mongoUsers, ...fallbackOnly];
       users.forEach(u => {
         if (u.active !== false) activeUsers++;
         const exp = u.subscriptionExpiry ? new Date(u.subscriptionExpiry) : null;
@@ -1477,11 +2047,15 @@ app.put('/api/admin/users/:id', async (req, res) => {
     // Blocking a user also revokes nothing else; unblocking restores access
     if (isDbConnected()) {
       await User.updateOne({ _id: userId }, { $set: set });
-      return res.json({ success: true, user: toAdminUser(await User.findById(userId).lean()) });
+      const updated = await User.findById(userId).lean();
+      mirrorMemUser(updated);
+      queueStoreSave();
+      return res.json({ success: true, user: toAdminUser(updated) });
     }
     const user = findMemUser('_id', userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     Object.assign(user, set);
+    queueStoreSave();
     res.json({ success: true, user: toAdminUser(user) });
   } catch (error) {
     console.error('Admin update user failed:', error);
@@ -1512,6 +2086,7 @@ app.post('/api/admin/notifications/broadcast', async (req, res) => {
           sent++;
         }
       });
+      queueStoreSave();
     }
     res.json({ success: true, sent });
   } catch (error) {
@@ -1529,7 +2104,7 @@ app.get('/api/admin/comments', async (req, res) => {
       comments = (await Comment.find().sort({ createdAt: -1 }).limit(200).lean())
         .map(c => ({ id: c._id, movieId: c.movieId, userName: c.userName, text: c.text, date: c.createdAt }));
     } else {
-      comments = memStore.comments.slice().reverse().map(c => ({ ...c, date: new Date(c.date) }));
+      comments = memStore.comments.slice().reverse().map(c => ({ ...c, date: new Date(c.date || c.createdAt || new Date()) }));
     }
     res.json({ comments });
   } catch (error) {
@@ -1547,6 +2122,7 @@ app.delete('/api/admin/comments/:id', async (req, res) => {
       await Comment.deleteOne({ _id: commentId });
     } else {
       memStore.comments = memStore.comments.filter(c => c.id !== commentId && c._id !== commentId);
+      queueStoreSave();
     }
     res.json({ success: true });
   } catch (error) {
@@ -1735,13 +2311,14 @@ app.put('/api/admin/settings', async (req, res) => {
   const decoded = requireAdmin(req, res);
   if (!decoded) return;
   try {
-    const allowed = ['siteName', 'siteTagline', 'siteDescription', 'footerAbout', 'footerText', 'adminEmail', 'instagram', 'whatsapp', 'phone', 'email', 'freeTrialDays', 'subscriptionPrice', 'subscriptionCurrency', 'features', 'siteTheme', 'availableThemes'];
+    const allowed = ['siteName', 'siteTagline', 'siteDescription', 'footerAbout', 'footerText', 'adminEmail', 'instagram', 'whatsapp', 'phone', 'email', 'freeTrialDays', 'subscriptionPrice', 'subscriptionCurrency', 'features', 'siteTheme', 'availableThemes', 'forceDarkMode'];
     const patch = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) patch[key] = req.body[key];
     }
     if (patch.subscriptionPrice !== undefined) patch.subscriptionPrice = parseFloat(patch.subscriptionPrice) || 4000;
     if (patch.freeTrialDays !== undefined) patch.freeTrialDays = parseInt(patch.freeTrialDays, 10) || 365;
+    if (patch.forceDarkMode !== undefined) patch.forceDarkMode = patch.forceDarkMode === true;
     const saved = await saveSettings(patch);
     res.json({ settings: saved });
   } catch (error) {
@@ -1945,77 +2522,200 @@ app.post('/api/track/play', async (req, res) => {
   }
 });
 
+const mergeTopMovies = (viewList, likeList, commentList) => {
+  const map = {};
+  const upsert = (id, title, key, n) => {
+    const k = String(id == null ? '' : id);
+    if (!map[k]) map[k] = { id: k, title: 'Unknown movie', views: 0, likes: 0, comments: 0 };
+    map[k][key] += n;
+    if (title && title !== 'Unknown movie') map[k].title = title;
+  };
+  (viewList || []).forEach(v => upsert(v.id, v.title, 'views', v.views));
+  (likeList || []).forEach(l => upsert(l.id, l.title, 'likes', l.likes));
+  (commentList || []).forEach(c => upsert(c.id, c.title, 'comments', c.comments));
+  return Object.values(map)
+    .sort((a, b) => (b.views + b.likes + b.comments) - (a.views + a.likes + a.comments))
+    .slice(0, 10);
+};
+
 app.get('/api/admin/analytics', async (req, res) => {
   const decoded = requireAdmin(req, res);
   if (!decoded) return;
   const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
   const weekAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000); weekAgo.setHours(0, 0, 0, 0);
+  const prevWeekEnd = new Date(weekAgo.getTime() - 1); prevWeekEnd.setHours(0, 0, 0, 0);
+  const prevWeekStart = new Date(prevWeekEnd.getTime() - 6 * 24 * 60 * 60 * 1000); prevWeekStart.setHours(0, 0, 0, 0);
+  const monthStart = new Date(Date.now()); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const trendStart = new Date(Date.now() - 13 * 24 * 60 * 60 * 1000); trendStart.setHours(0, 0, 0, 0);
   const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const pctChange = (cur, prev) => Math.round(((cur - prev) / Math.max(1, prev)) * 100);
+  const toList = (rows, key) => rows.map(r => ({ page: r._id, count: r.count }));
   try {
-    let totalViews, todayViews, weekViews, uniqueVisitors, viewsByPage = [], popularMusic = [], last7Days, recentVisitors = [];
+    let payload;
     if (isDbConnected()) {
-      totalViews = await Visit.countDocuments();
-      todayViews = await Visit.countDocuments({ createdAt: { $gte: startOfToday } });
-      weekViews = await Visit.countDocuments({ createdAt: { $gte: weekAgo } });
-      uniqueVisitors = (await Visit.distinct('ip')).filter(Boolean).length;
-      const pageAgg = await Visit.aggregate([
-        { $group: { _id: { $ifNull: ['$page', '/'] }, count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 }
+      const [
+        totalViews, todayViews, weekViews, monthViews, prevWeekViews, uniqueVisitors,
+        totalLikes, likesToday, likesWeek, likesMonth, prevWeekLikes,
+        totalComments, commentsToday, commentsWeek, commentsMonth, prevWeekComments,
+        totalWatchRecords, viewDays, likeDays, commentDays,
+        pageRows, musicRows, viewAgg, likeAgg, commentAgg, recentVisitors
+      ] = await Promise.all([
+        Visit.countDocuments(),
+        Visit.countDocuments({ createdAt: { $gte: startOfToday } }),
+        Visit.countDocuments({ createdAt: { $gte: weekAgo } }),
+        Visit.countDocuments({ createdAt: { $gte: monthStart } }),
+        Visit.countDocuments({ createdAt: { $gte: prevWeekStart, $lte: prevWeekEnd } }),
+        Visit.distinct('ip').then(ips => ips.filter(Boolean).length),
+        Favorite.countDocuments(),
+        Favorite.countDocuments({ createdAt: { $gte: startOfToday } }),
+        Favorite.countDocuments({ createdAt: { $gte: weekAgo } }),
+        Favorite.countDocuments({ createdAt: { $gte: monthStart } }),
+        Favorite.countDocuments({ createdAt: { $gte: prevWeekStart, $lte: prevWeekEnd } }),
+        Comment.countDocuments(),
+        Comment.countDocuments({ createdAt: { $gte: startOfToday } }),
+        Comment.countDocuments({ createdAt: { $gte: weekAgo } }),
+        Comment.countDocuments({ createdAt: { $gte: monthStart } }),
+        Comment.countDocuments({ createdAt: { $gte: prevWeekStart, $lte: prevWeekEnd } }),
+        WatchHistory.countDocuments(),
+        Visit.aggregate([
+          { $match: { createdAt: { $gte: trendStart } } },
+          { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } }
+        ]),
+        Favorite.aggregate([
+          { $match: { createdAt: { $gte: trendStart } } },
+          { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } }
+        ]),
+        Comment.aggregate([
+          { $match: { createdAt: { $gte: trendStart } } },
+          { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } }
+        ]),
+        Visit.aggregate([
+          { $group: { _id: { $ifNull: ['$page', '/'] }, count: { $sum: 1 } } },
+          { $sort: { count: -1 } }, { $limit: 10 }
+        ]),
+        MusicPlay.aggregate([
+          { $group: { _id: { $ifNull: ['$title', 'Untitled'] }, videoId: { $first: '$videoId' }, channelTitle: { $first: { $ifNull: ['$channelTitle', ''] } }, count: { $sum: 1 } } },
+          { $sort: { count: -1 } }, { $limit: 10 }
+        ]),
+        WatchHistory.aggregate([
+          { $group: { _id: '$movieId', title: { $max: { $ifNull: ['$movieTitle', ''] } }, views: { $sum: 1 } } },
+          { $sort: { views: -1 } }, { $limit: 50 }
+        ]),
+        Favorite.aggregate([
+          { $group: { _id: '$movieId', title: { $max: { $ifNull: ['$movieTitle', ''] } }, likes: { $sum: 1 } } },
+          { $sort: { likes: -1 } }, { $limit: 50 }
+        ]),
+        Comment.aggregate([
+          { $group: { _id: '$movieId', comments: { $sum: 1 } } },
+          { $sort: { comments: -1 } }, { $limit: 50 }
+        ]),
+        Visit.find().sort({ createdAt: -1 }).limit(8).lean()
       ]);
-      viewsByPage = pageAgg.map(x => ({ page: x._id, count: x.count }));
-      const musicAgg = await MusicPlay.aggregate([
-        { $group: { _id: { $ifNull: ['$title', 'Untitled'] }, videoId: { $first: '$videoId' }, channelTitle: { $first: { $ifNull: ['$channelTitle', ''] } }, count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 }
-      ]);
-      popularMusic = musicAgg.map(x => ({ title: x._id, videoId: x.videoId, channelTitle: x.channelTitle, plays: x.count }));
-      const days = await Visit.aggregate([
-        { $match: { createdAt: { $gte: weekAgo } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } }
-      ]);
-      const byDay = {};
-      days.forEach(d => { byDay[d._id] = d.count; });
-      last7Days = Array.from({ length: 7 }, (_, i) => {
-        const d = new Date(weekAgo.getTime() + i * 24 * 60 * 60 * 1000);
+      const byDay = (rows) => { const o = {}; rows.forEach(r => { o[r._id] = r.count; }); return o; };
+      const vD = byDay(viewDays), lD = byDay(likeDays), cD = byDay(commentDays);
+      const trend = Array.from({ length: 14 }, (_, i) => {
+        const d = new Date(trendStart.getTime() + i * 24 * 60 * 60 * 1000);
         const k = dayKey(d);
-        return { date: k, label: d.toLocaleDateString(undefined, { weekday: 'short' }), count: byDay[k] || 0 };
+        return { date: k, label: d.toLocaleDateString(undefined, { day: 'numeric', weekday: 'short' }), views: vD[k] || 0, likes: lD[k] || 0, comments: cD[k] || 0 };
       });
-      recentVisitors = await Visit.find().sort({ createdAt: -1 }).limit(8).lean();
+      const topViewedMovies = viewAgg.map(v => ({ id: v._id, title: v.title || 'Unknown movie', views: v.views }));
+      const topLikedMovies = likeAgg.map(l => ({ id: l._id, title: l.title || 'Unknown movie', likes: l.likes }));
+      const topCommentedMovies = commentAgg.map(c => ({ id: c._id, title: 'Unknown movie', comments: c.comments }));
+      payload = {
+        totalViews, todayViews, weekViews, monthViews, prevWeekViews, viewDelta: pctChange(weekViews, prevWeekViews),
+        uniqueVisitors,
+        totalLikes, likesToday, likesWeek, likesMonth, prevWeekLikes, likeDelta: pctChange(likesWeek, prevWeekLikes),
+        totalComments, commentsToday, commentsWeek, commentsMonth, prevWeekComments, commentDelta: pctChange(commentsWeek, prevWeekComments),
+        totalWatchRecords,
+        trend,
+        topMovies: mergeTopMovies(topViewedMovies, topLikedMovies, topCommentedMovies),
+        topViewedMovies, topLikedMovies, topCommentedMovies,
+        popularMusic: musicRows.map(x => ({ title: x._id, videoId: x.videoId, channelTitle: x.channelTitle, plays: x.count })),
+        viewsByPage: toList(pageRows, 'count'),
+        recentVisitors: recentVisitors.map(v => ({ page: v.page || '/', ip: v.ip || '', createdAt: v.createdAt }))
+      };
     } else {
       const visits = memStore.visits || [];
+      const favs = memStore.favorites || [];
+      const comments = memStore.comments || [];
+      const watch = memStore.watchHistories || [];
+      const at = (d) => new Date(d && d.createdAt ? d.createdAt : (d && d.date));
+      const inRange = (arr, from, to) => arr.filter(x => { const t = at(x).getTime(); return (!from || t >= from.getTime()) && (!to || t <= to.getTime()); });
       totalViews = visits.length;
-      todayViews = visits.filter(v => new Date(v.createdAt) >= startOfToday).length;
-      weekViews = visits.filter(v => new Date(v.createdAt) >= weekAgo).length;
+      todayViews = visits.filter(v => at(v) >= startOfToday).length;
+      weekViews = visits.filter(v => at(v) >= weekAgo).length;
+      monthViews = visits.filter(v => at(v) >= monthStart).length;
+      prevWeekViews = visits.filter(v => at(v) >= prevWeekStart && at(v) <= prevWeekEnd).length;
       uniqueVisitors = new Set(visits.map(v => v.ip).filter(Boolean)).size;
+      totalLikes = favs.length;
+      likesToday = favs.filter(f => at(f) >= startOfToday).length;
+      likesWeek = favs.filter(f => at(f) >= weekAgo).length;
+      likesMonth = favs.filter(f => at(f) >= monthStart).length;
+      prevWeekLikes = favs.filter(f => at(f) >= prevWeekStart && at(f) <= prevWeekEnd).length;
+      totalComments = comments.length;
+      commentsToday = comments.filter(c => at(c) >= startOfToday).length;
+      commentsWeek = comments.filter(c => at(c) >= weekAgo).length;
+      commentsMonth = comments.filter(c => at(c) >= monthStart).length;
+      prevWeekComments = comments.filter(c => at(c) >= prevWeekStart && at(c) <= prevWeekEnd).length;
+      totalWatchRecords = watch.length;
+      const vD = {}, lD = {}, cD = {};
+      visits.forEach(v => { const t = at(v); if (t >= trendStart) vD[dayKey(t)] = (vD[dayKey(t)] || 0) + 1; });
+      favs.forEach(f => { const t = at(f); if (t >= trendStart) lD[dayKey(t)] = (lD[dayKey(t)] || 0) + 1; });
+      comments.forEach(c => { const t = at(c); if (t >= trendStart) cD[dayKey(t)] = (cD[dayKey(t)] || 0) + 1; });
+      const trend = Array.from({ length: 14 }, (_, i) => {
+        const d = new Date(trendStart.getTime() + i * 24 * 60 * 60 * 1000);
+        const k = dayKey(d);
+        return { date: k, label: d.toLocaleDateString(undefined, { day: 'numeric', weekday: 'short' }), views: vD[k] || 0, likes: lD[k] || 0, comments: cD[k] || 0 };
+      });
       const pageMap = {};
       visits.forEach(v => { const p = v.page || '/'; pageMap[p] = (pageMap[p] || 0) + 1; });
-      viewsByPage = Object.entries(pageMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([page, count]) => ({ page, count }));
+      const viewsByPage = Object.entries(pageMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([page, count]) => ({ page, count }));
       const musicMap = {};
       (memStore.musicPlays || []).forEach(m => {
         const t = m.title || 'Untitled';
         if (!musicMap[t]) musicMap[t] = { title: t, videoId: m.videoId, channelTitle: m.channelTitle, plays: 0 };
         musicMap[t].plays++;
       });
-      popularMusic = Object.values(musicMap).sort((a, b) => b.plays - a.plays).slice(0, 10);
-      const byDay = {};
-      visits.forEach(v => {
-        const d = new Date(v.createdAt);
-        if (d >= weekAgo) { byDay[dayKey(d)] = (byDay[dayKey(d)] || 0) + 1; }
+      const popularMusic = Object.values(musicMap).sort((a, b) => b.plays - a.plays).slice(0, 10);
+      const viewMap = {}, likeMap = {}, commentMap = {};
+      watch.forEach(h => {
+        const k = String(h.movieId == null ? '' : h.movieId);
+        if (!viewMap[k]) viewMap[k] = { id: k, title: h.movieTitle || 'Unknown movie', views: 0 };
+        viewMap[k].views++;
+        if (h.movieTitle) viewMap[k].title = h.movieTitle;
       });
-      last7Days = Array.from({ length: 7 }, (_, i) => {
-        const d = new Date(weekAgo.getTime() + i * 24 * 60 * 60 * 1000);
-        const k = dayKey(d);
-        return { date: k, label: d.toLocaleDateString(undefined, { weekday: 'short' }), count: byDay[k] || 0 };
+      favs.forEach(f => {
+        const k = String(f.movieId == null ? '' : f.movieId);
+        if (!likeMap[k]) likeMap[k] = { id: k, title: f.movieTitle || 'Unknown movie', likes: 0 };
+        likeMap[k].likes++;
+        if (f.movieTitle) likeMap[k].title = f.movieTitle;
       });
-      recentVisitors = visits.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 8);
+      comments.forEach(c => {
+        const k = String(c.movieId == null ? '' : c.movieId);
+        if (!commentMap[k]) commentMap[k] = { id: k, title: c.movieTitle || 'Unknown movie', comments: 0 };
+        commentMap[k].comments++;
+        if (c.movieTitle) commentMap[k].title = c.movieTitle;
+      });
+      const sortBy = (obj, key) => Object.values(obj).sort((a, b) => b[key] - a[key]);
+      const topViewedMovies = sortBy(viewMap, 'views').slice(0, 10);
+      const topLikedMovies = sortBy(likeMap, 'likes').slice(0, 10);
+      const topCommentedMovies = sortBy(commentMap, 'comments').slice(0, 10);
+      const recentVisitors = visits.slice().sort((a, b) => at(b) - at(a)).slice(0, 8);
+      payload = {
+        totalViews, todayViews, weekViews, monthViews, prevWeekViews, viewDelta: pctChange(weekViews, prevWeekViews),
+        uniqueVisitors,
+        totalLikes, likesToday, likesWeek, likesMonth, prevWeekLikes, likeDelta: pctChange(likesWeek, prevWeekLikes),
+        totalComments, commentsToday, commentsWeek, commentsMonth, prevWeekComments, commentDelta: pctChange(commentsWeek, prevWeekComments),
+        totalWatchRecords,
+        trend,
+        topMovies: mergeTopMovies(topViewedMovies.slice(0, 50), topLikedMovies.slice(0, 50), topCommentedMovies.slice(0, 50)),
+        topViewedMovies, topLikedMovies, topCommentedMovies,
+        popularMusic, viewsByPage,
+        recentVisitors: recentVisitors.map(v => ({ page: v.page || '/', ip: v.ip || '', createdAt: v.createdAt }))
+      };
     }
-    const maxDay = Math.max(1, ...(last7Days || []).map(d => d.count));
-    res.json({
-      totalViews, todayViews, weekViews, uniqueVisitors, viewsByPage, popularMusic, last7Days,
-      maxDay,
-      recentVisitors: recentVisitors.map(v => ({ page: v.page || '/', ip: v.ip || '', createdAt: v.createdAt }))
-    });
+    const maxE = Math.max(1, ...payload.trend.map(d => Math.max(d.views, d.likes, d.comments)));
+    res.json({ ...payload, maxE });
   } catch (error) {
     console.error('Admin analytics error:', error);
     res.status(500).json({ error: 'Failed to load analytics' });
